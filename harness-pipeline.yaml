@@ -1,0 +1,267 @@
+## ============================================================================
+## Harness CI/CD pipeline: build -> STO (OWASP) security scan -> Jira automation
+## ============================================================================
+##
+## What this pipeline does:
+##   1. Build stage (type: CI)
+##      - Clones the repo and installs dependencies for the demo app in
+##        sample-app/.
+##      - Runs the Harness STO "OWASP Dependency-Check" step as the
+##        governance-grade scan (shows up in the STO Vulnerabilities/Test
+##        Targets UI, supports baselines, etc.) - this satisfies "add STO,
+##        just the OWASP scanner, not the whole STO suite".
+##      - ALSO runs `npm audit --json` and a parser script in the same
+##        stage. This is the actual data source for the Jira automation
+##        below - see the long comment above "Parse_Vulnerabilities" for why.
+##   2. Jira automation stage (type: Custom)
+##      - Creates ONE parent Jira ticket named after the release.
+##      - Creates ONE Jira sub-task per distinct vulnerability found,
+##        looped with Harness's built-in "Repeat" looping strategy (no
+##        custom Jira API script - just the native Jira Create step).
+##      - Both steps are skipped automatically if no vulnerabilities were
+##        found.
+##
+## BEFORE YOU RUN THIS - replace every ALL_CAPS placeholder below:
+##   YOUR_HARNESS_PROJECT_ID, YOUR_HARNESS_ORG_ID, YOUR_CODE_REPO_CONNECTOR,
+##   YOUR_JIRA_CONNECTOR, YOUR_JIRA_PROJECT_KEY, YOUR_DOCKER_CONNECTOR (optional)
+##
+## Things flagged for verification in your account (see README.md "Before you
+## run this" section for the full list and why):
+##   - The exact `type:` and `spec` fields for the OWASP Dependency-Check step
+##     (STO's schema evolves between versions/accounts - build the step once
+##     in the Pipeline Studio's visual editor, switch to YAML view, and diff
+##     against what's below).
+##   - Whether "Jira Create" appears in the step palette for a Custom stage in
+##     your account. Harness's own docs describe it for CD and Approval
+##     stages explicitly; Custom stages support it in most current accounts,
+##     but if it's missing, move the two Jira steps into an Approval stage
+##     instead (no service/environment required, same as Custom).
+## ============================================================================
+
+pipeline:
+  name: cicd-sto-owasp-jira-demo
+  identifier: cicd_sto_owasp_jira_demo
+  projectIdentifier: YOUR_HARNESS_PROJECT_ID
+  orgIdentifier: YOUR_HARNESS_ORG_ID
+  tags: {}
+
+  # Required because the Build stage below uses cloneCodebase: true.
+  properties:
+    ci:
+      codebase:
+        connectorRef: YOUR_CODE_REPO_CONNECTOR
+        build: <+input>
+
+  variables:
+    - name: release_name
+      type: String
+      description: Release/version name used to title the parent Jira ticket
+      required: true
+      value: <+input>
+    - name: jira_project_key
+      type: String
+      description: Jira project key to file tickets in
+      required: true
+      value: <+input>
+    - name: jira_parent_issue_type
+      type: String
+      description: Jira issue type to use for the parent release ticket
+      required: false
+      value: Task
+    - name: jira_child_issue_type
+      type: String
+      description: Jira issue type to use for each vulnerability (must be a valid sub-task type for jira_parent_issue_type in your project)
+      required: false
+      value: Sub-task
+    - name: min_severity_for_demo
+      type: String
+      description: Optional filter passed to the parser script (e.g. "high") to keep a LIVE DEMO fast - a real scan can produce 30-50+ findings. Leave blank for no filtering.
+      required: false
+      value: high
+
+  stages:
+    ## ------------------------------------------------------------------
+    ## Stage 1: Build + Security scan
+    ## ------------------------------------------------------------------
+    - stage:
+        name: Build_And_Scan
+        identifier: Build_And_Scan
+        description: "Build the sample app, run the STO OWASP scan, and flatten vulnerabilities for the Jira automation stage"
+        type: CI
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud # Switch to `Kubernetes` or `Docker` (with `spec: {}`) if you're using self-hosted build infrastructure instead of Harness Cloud.
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Install_Dependencies
+                  identifier: Install_Dependencies
+                  spec:
+                    shell: Sh
+                    command: |-
+                      cd sample-app
+                      npm install --package-lock-only
+                    # Reminder: install a Node image if your build infra doesn't
+                    # have one baked in - add `connectorRef` + `image: node:20`
+                    # here if needed.
+
+              ## --------------------------------------------------------
+              ## Governance scan: Harness STO's native OWASP Dependency-Check
+              ## step. This is the "real" STO scan for the security team /
+              ## STO dashboard. VERIFY this block's field names against your
+              ## account (see the top-of-file note) - drag the OWASP
+              ## Dependency-Check step onto this stage in the visual editor
+              ## once, switch to YAML, and reconcile any differences.
+              ## --------------------------------------------------------
+              - step:
+                  type: Owasp
+                  name: OWASP_Dependency_Check
+                  identifier: OWASP_Dependency_Check
+                  spec:
+                    mode: orchestration
+                    config: default
+                    target:
+                      type: repository
+                      name: <+codebase.repoUrl>
+                      variant: <+codebase.branch>
+                      workspace: sample-app
+                    advanced:
+                      log:
+                        level: info
+                    privileged: true
+                  # Intentionally NOT set to fail the pipeline on severity -
+                  # we want execution to continue into the Jira automation
+                  # stage even when vulnerabilities are found. If your
+                  # account's step exposes a `fail_on_severity` field, leave
+                  # it unset/None for this pipeline.
+
+              ## --------------------------------------------------------
+              ## Data source for the Jira automation: npm audit.
+              ##
+              ## Why not parse the OWASP step's own report file directly?
+              ## The exact in-container path Harness writes
+              ## dependency-check-report.json to can vary by STO scanner
+              ## image/version, and getting that wrong would silently break
+              ## the Jira automation. `npm audit --json` has a stable,
+              ## well-documented schema and needs zero guessing about file
+              ## paths, so the demo's Jira automation is driven off that
+              ## instead. Once you've confirmed the real report's path in
+              ## your account, you can swap this step to call
+              ## scripts/parse_owasp_dependency_check.py against it instead -
+              ## it produces the exact same RELEASE_NAME/VULN_COUNT/VULN_ITEMS
+              ## contract, so nothing downstream needs to change.
+              ## --------------------------------------------------------
+              - step:
+                  type: Run
+                  name: Run_NPM_Audit
+                  identifier: Run_NPM_Audit
+                  spec:
+                    shell: Sh
+                    command: |-
+                      cd sample-app
+                      npm audit --json > /harness/npm-audit.json || true
+                      cat /harness/npm-audit.json
+
+              - step:
+                  type: Run
+                  name: Parse_Vulnerabilities
+                  identifier: Parse_Vulnerabilities
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
+                    command: |-
+                      set -e
+                      SEVERITY_FLAG=""
+                      if [ -n "$MIN_SEVERITY" ]; then
+                        SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
+                      fi
+
+                      python3 scripts/parse_npm_audit.py /harness/npm-audit.json "$RELEASE_NAME" $SEVERITY_FLAG \
+                        > /harness/vuln_vars.env
+
+                      cat /harness/vuln_vars.env
+
+                      export RELEASE_NAME=$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)
+                      export VULN_COUNT=$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)
+                      export VULN_ITEMS=$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)
+                    outputVariables:
+                      - name: RELEASE_NAME
+                      - name: VULN_COUNT
+                      - name: VULN_ITEMS
+
+    ## ------------------------------------------------------------------
+    ## Stage 2: Jira automation - one parent ticket per release,
+    ## one child sub-task per vulnerability.
+    ## ------------------------------------------------------------------
+    - stage:
+        name: Jira_Automation
+        identifier: Jira_Automation
+        description: "File a parent Jira ticket for the release, then one child sub-task per vulnerability found"
+        type: Custom # If "Jira Create" isn't in this stage type's step palette in your account, change this to `Approval` instead - both work without a service/environment, and Harness's docs explicitly confirm Jira Create on Approval stages.
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: JiraCreate
+                  name: Create_Parent_Release_Ticket
+                  identifier: Create_Parent_Release_Ticket
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                  spec:
+                    connectorRef: YOUR_JIRA_CONNECTOR
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_parent_issue_type>
+                    fields:
+                      - name: Summary
+                        value: "Security scan results - <+pipeline.variables.release_name> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found"
+                      - name: Description
+                        value: |-
+                          Automated security scan for release <+pipeline.variables.release_name>.
+
+                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+
+                          Each vulnerability has been filed as a linked child ticket below.
+
+                          Pipeline execution: <+pipeline.executionUrl>
+                  timeout: 5m
+
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Vulnerability_Ticket
+                  identifier: Create_Child_Vulnerability_Ticket
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                  spec:
+                    connectorRef: YOUR_JIRA_CONNECTOR
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_child_issue_type>
+                    fields:
+                      - name: Summary
+                        value: "[<+ <+repeat.item>.split(\"##\")[1] >] <+ <+repeat.item>.split(\"##\")[0] > in <+ <+repeat.item>.split(\"##\")[2] > (<+pipeline.variables.release_name>)"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+ <+repeat.item>.split("##")[0] >
+                          Severity: <+ <+repeat.item>.split("##")[1] >
+                          Package: <+ <+repeat.item>.split("##")[2] >
+                          Vulnerable range: <+ <+repeat.item>.split("##")[3] >
+                          CVSS score: <+ <+repeat.item>.split("##")[4] >
+                          Details: <+ <+repeat.item>.split("##")[5] >
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                  timeout: 5m
+                  strategy:
+                    repeat:
+                      items: <+ <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>.split("@@@") >
+                      maxConcurrency: 3
