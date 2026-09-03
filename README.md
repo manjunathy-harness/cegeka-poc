@@ -161,3 +161,4 @@ that step (or add more parser calls) to fold their findings into the same
 `VULN_ITEMS` list, and the exact same parent/child Jira automation will
 pick them up with no changes.
 # cegeka-poc
+# cegeka-poc
