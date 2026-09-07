@@ -97,9 +97,6 @@ pipeline:
                   identifier: Parse_Vulnerabilities
                   spec:
                     shell: Sh
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
 
@@ -131,11 +128,44 @@ pipeline:
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
-                      echo "VULN_ITEMS=$VULN_ITEMS"
+
+                      echo "=============================================="
+                      echo "RAW VULN_ITEMS"
+                      echo "=============================================="
+
+                      printf '%s\n' "$VULN_ITEMS"
+
+                      echo "=============================================="
+                      echo "VULN ITEMS SPLIT BY @@@"
+                      echo "=============================================="
+
+                      python3 - <<'PY'
+                      import os
+
+                      vuln_items = os.environ.get("VULN_ITEMS", "")
+
+                      records = vuln_items.split("@@@")
+
+                      for i, record in enumerate(records, 1):
+                          print(f"RECORD {i}:")
+                          print(record)
+                          print("----------------------------------------------")
+                      PY
+
+                      echo "=============================================="
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     outputVariables:
                       - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
                       - name: VULN_COUNT
+                        type: String
+                        value: VULN_COUNT
                       - name: VULN_ITEMS
+                        type: String
+                        value: VULN_ITEMS
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
