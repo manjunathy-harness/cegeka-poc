@@ -177,7 +177,7 @@ def main():
     )
 
     parser.add_argument(
-        "report_path",
+        "report_path"
     )
 
     parser.add_argument(
@@ -254,27 +254,22 @@ def main():
                 record["advisory_id"],
                 60,
             ),
-
             sanitize(
                 record["severity"],
                 20,
             ),
-
             sanitize(
                 record["package"],
                 80,
             ),
-
             sanitize(
                 record["range"],
                 60,
             ),
-
             sanitize(
                 record["cvss_score"],
                 20,
             ),
-
             sanitize(
                 record["title"],
                 180,
@@ -285,23 +280,9 @@ def main():
             FIELD_SEP.join(fields)
         )
 
-    # ---------------------------------------------------------
-    # Split into chunks of 10 records.
-    # 46 vulnerabilities -> 10 + 10 + 10 + 10 + 6
-    # ---------------------------------------------------------
-    chunk_size = 10
-
-    chunks = [
-        flattened[i:i + chunk_size]
-        for i in range(
-            0,
-            len(flattened),
-            chunk_size,
-        )
-    ]
-
-    while len(chunks) < 5:
-        chunks.append([])
+    vuln_items = RECORD_SEP.join(
+        flattened
+    )
 
     print(
         f"RELEASE_NAME={args.release_name}"
@@ -311,16 +292,10 @@ def main():
         f"VULN_COUNT={len(records)}"
     )
 
-    for i in range(5):
-        value = RECORD_SEP.join(
-            chunks[i]
-        )
+    print(
+        f"VULN_ITEMS={vuln_items}"
+    )
 
-        print(
-            f"VULN_ITEMS_{i + 1}={value}"
-        )
-
-    # Human-readable logs
     print(
         "",
         file=sys.stderr,
@@ -343,6 +318,7 @@ def main():
     )
 
     for record in records:
+
         print(
             f"[{record['severity']}] "
             f"{record['advisory_id']} - "
