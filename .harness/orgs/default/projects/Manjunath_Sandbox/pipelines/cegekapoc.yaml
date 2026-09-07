@@ -61,7 +61,6 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -87,9 +86,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm audit --json > /harness/npm-audit.json || true
-
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -97,6 +94,9 @@ pipeline:
                   identifier: Parse_Vulnerabilities
                   spec:
                     shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
 
@@ -153,19 +153,10 @@ pipeline:
                       PY
 
                       echo "=============================================="
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     outputVariables:
                       - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
                       - name: VULN_COUNT
-                        type: String
-                        value: VULN_COUNT
                       - name: VULN_ITEMS
-                        type: String
-                        value: VULN_ITEMS
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
@@ -214,15 +205,15 @@ pipeline:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
+                        value: "[<+repeat.item.split(\"##\")[1]>] <+repeat.item.split(\"##\")[0]> in <+repeat.item.split(\"##\")[2]>"
                       - name: Description
                         value: |-
-                          Advisory / CVE: <+repeat.item.split("~")[0]>
-                          Severity: <+repeat.item.split("~")[1]>
-                          Package: <+repeat.item.split("~")[2]>
-                          Vulnerable range: <+repeat.item.split("~")[3]>
-                          CVSS score: <+repeat.item.split("~")[4]>
-                          Details: <+repeat.item.split("~")[5]>
+                          Advisory / CVE: <+repeat.item.split("##")[0]>
+                          Severity: <+repeat.item.split("##")[1]>
+                          Package: <+repeat.item.split("##")[2]>
+                          Vulnerable range: <+repeat.item.split("##")[3]>
+                          CVSS score: <+repeat.item.split("##")[4]>
+                          Details: <+repeat.item.split("##")[5]>
 
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
