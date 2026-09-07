@@ -43,7 +43,7 @@ RECORD_SEP = "@@@"
 
 # Anything that could break our delimiter scheme or the shell/YAML around it
 # gets stripped out of free-text fields (title/description).
-_SANITIZE_RE = re.compile(r"[#@\r\n\t]")
+_SANITIZE_RE = re.compile(r"[#@<>+\r\n\t]")
 
 
 def sanitize(value, max_len=180):
