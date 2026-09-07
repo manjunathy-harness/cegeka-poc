@@ -183,11 +183,11 @@ pipeline:
                         errors:
                           - AllErrors
                         action:
-                          type: Ignore
+                          type: MarkAsSuccess
                   strategy:
                     repeat:
                       items: <+ <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>.split("@@@") >
-                      maxConcurrency: 3
+                      maxConcurrency: 1
               - step:
                   type: JiraUpdate
                   name: Mark_Reverification_Clean
