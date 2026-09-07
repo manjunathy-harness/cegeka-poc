@@ -3,22 +3,21 @@
 """
 parse_npm_audit.py
 
-Reads an npm audit --json report and converts vulnerabilities into
-flat records that can be consumed by a Harness Repeat strategy.
+Reads an npm audit --json report and flattens every distinct vulnerability
+(advisory) into a single delimited string that a Harness Repeat strategy
+can iterate over.
+
+Each item in VULN_ITEMS contains 6 fields separated by ##:
+
+  ADVISORY_ID##SEVERITY##PACKAGE##VULNERABLE_RANGE##CVSS_SCORE##TITLE
+
+Multiple vulnerability records are separated by @@@.
 
 Output:
 
-RELEASE_NAME=<release name>
-VULN_COUNT=<number of vulnerabilities>
-VULN_ITEMS=<record1@@@record2@@@record3>
-
-Each record contains 6 fields separated by "~":
-
-ADVISORY_ID~SEVERITY~PACKAGE~VULNERABLE_RANGE~CVSS_SCORE~TITLE
-
-Example:
-
-GHSA-XXXX~HIGH~axios~<1.8.2~7.5~Axios vulnerability
+  RELEASE_NAME=<release name>
+  VULN_COUNT=<number of distinct advisories found>
+  VULN_ITEMS=<record1@@@record2@@@record3>
 """
 
 import argparse
@@ -27,27 +26,21 @@ import os
 import re
 import sys
 
-
-# ---------------------------------------------------------
-# Safe separators
-# ---------------------------------------------------------
-FIELD_SEP = "~"
+FIELD_SEP = "##"
 RECORD_SEP = "@@@"
 
-# Remove characters that can break our delimiter scheme.
-SANITIZE_RE = re.compile(r"[~@#<>+\r\n\t]")
+# Remove characters that can interfere with the delimiter structure.
+# Keep "#" out of fields so "##" remains safe as a separator.
+_SANITIZE_RE = re.compile(r"[#@<>+\r\n\t]")
 
 
-# ---------------------------------------------------------
-# Sanitize text
-# ---------------------------------------------------------
 def sanitize(value, max_len=180):
     if value is None:
         value = ""
 
     value = str(value)
 
-    value = SANITIZE_RE.sub(" ", value)
+    value = _SANITIZE_RE.sub(" ", value)
 
     value = re.sub(r"\s+", " ", value).strip()
 
@@ -57,16 +50,13 @@ def sanitize(value, max_len=180):
     return value
 
 
-# ---------------------------------------------------------
-# Extract advisory ID
-# ---------------------------------------------------------
 def advisory_id_from(via_entry):
     url = via_entry.get("url", "") or ""
 
     match = re.search(
         r"(GHSA-[a-z0-9-]+)",
         url,
-        re.IGNORECASE
+        re.IGNORECASE,
     )
 
     if match:
@@ -80,22 +70,18 @@ def advisory_id_from(via_entry):
     return "UNKNOWN-ADVISORY"
 
 
-# ---------------------------------------------------------
-# Convert severity to normalized value
-# ---------------------------------------------------------
-def normalize_severity(raw_severity, cvss_score=None):
+def normalize_severity(raw_severity, cvss_score):
     """
-    Resolve severity using:
-
-    1. npm advisory severity
-    2. package severity
-    3. CVSS score fallback
-    4. UNKNOWN
+    Determine severity using:
+      1. advisory severity
+      2. package severity
+      3. CVSS fallback
+      4. UNKNOWN
     """
 
     severity = str(raw_severity or "").strip().upper()
 
-    valid = {
+    valid_severities = {
         "CRITICAL",
         "HIGH",
         "MODERATE",
@@ -104,12 +90,9 @@ def normalize_severity(raw_severity, cvss_score=None):
         "INFO",
     }
 
-    if severity in valid:
+    if severity in valid_severities:
         return severity
 
-    # -----------------------------------------------------
-    # Fallback to CVSS
-    # -----------------------------------------------------
     try:
         score = float(cvss_score)
     except (TypeError, ValueError):
@@ -118,63 +101,52 @@ def normalize_severity(raw_severity, cvss_score=None):
     if score is not None:
         if score >= 9.0:
             return "CRITICAL"
-
-        if score >= 7.0:
+        elif score >= 7.0:
             return "HIGH"
-
-        if score >= 4.0:
+        elif score >= 4.0:
             return "MODERATE"
-
-        return "LOW"
+        else:
+            return "LOW"
 
     return "UNKNOWN"
 
 
-# ---------------------------------------------------------
-# Extract vulnerability records
-# ---------------------------------------------------------
 def extract_records(audit_report):
-    vulnerabilities = (
-        audit_report.get("vulnerabilities", {})
-        or {}
-    )
+    """Yield one normalized record per distinct advisory/package."""
 
-    seen = set()
+    vulnerabilities = audit_report.get("vulnerabilities", {}) or {}
+
+    seen_advisories = set()
 
     for package_name, pkg_info in vulnerabilities.items():
 
         if not isinstance(pkg_info, dict):
             continue
 
-        via_list = (
-            pkg_info.get("via", [])
-            or []
-        )
+        via_list = pkg_info.get("via", []) or []
 
         for via_entry in via_list:
 
-            # npm audit `via` can contain strings
-            # representing transitive package references.
+            # npm audit may contain strings in via for
+            # transitive dependency references.
             if not isinstance(via_entry, dict):
                 continue
 
-            advisory_id = advisory_id_from(
-                via_entry
-            )
+            advisory_id = advisory_id_from(via_entry)
 
             dedupe_key = (
                 advisory_id,
-                package_name
+                package_name,
             )
 
-            if dedupe_key in seen:
+            if dedupe_key in seen_advisories:
                 continue
 
-            seen.add(dedupe_key)
+            seen_advisories.add(dedupe_key)
 
-            # -------------------------------------------------
+            # -----------------------------
             # CVSS
-            # -------------------------------------------------
+            # -----------------------------
             cvss = via_entry.get("cvss") or {}
 
             cvss_score = cvss.get("score")
@@ -182,9 +154,9 @@ def extract_records(audit_report):
             if cvss_score in (None, ""):
                 cvss_score = "n/a"
 
-            # -------------------------------------------------
+            # -----------------------------
             # Severity
-            # -------------------------------------------------
+            # -----------------------------
             raw_severity = (
                 via_entry.get("severity")
                 or pkg_info.get("severity")
@@ -193,40 +165,34 @@ def extract_records(audit_report):
 
             severity = normalize_severity(
                 raw_severity,
-                cvss_score
+                cvss_score,
             )
 
-            # -------------------------------------------------
+            # -----------------------------
             # Package
-            # -------------------------------------------------
+            # -----------------------------
             package = (
                 package_name
                 or pkg_info.get("name")
                 or "unknown"
             )
 
-            # -------------------------------------------------
+            # -----------------------------
             # Vulnerable range
-            # -------------------------------------------------
+            # -----------------------------
             vulnerable_range = (
                 via_entry.get("range")
                 or pkg_info.get("range")
                 or "unknown"
             )
 
-            # -------------------------------------------------
+            # -----------------------------
             # Title
-            # -------------------------------------------------
+            # -----------------------------
             title = (
                 via_entry.get("title")
-                or via_entry.get("name")
                 or f"Vulnerability in {package}"
             )
-
-            # -------------------------------------------------
-            # URL
-            # -------------------------------------------------
-            url = via_entry.get("url", "") or ""
 
             yield {
                 "advisory_id": advisory_id,
@@ -235,13 +201,10 @@ def extract_records(audit_report):
                 "range": vulnerable_range,
                 "cvss_score": cvss_score,
                 "title": title,
-                "url": url,
+                "url": via_entry.get("url", "") or "",
             }
 
 
-# ---------------------------------------------------------
-# Severity ranking
-# ---------------------------------------------------------
 def severity_rank(severity):
     order = {
         "CRITICAL": 0,
@@ -255,13 +218,10 @@ def severity_rank(severity):
 
     return order.get(
         str(severity).upper(),
-        5
+        5,
     )
 
 
-# ---------------------------------------------------------
-# Main
-# ---------------------------------------------------------
 def main():
 
     parser = argparse.ArgumentParser(
@@ -270,7 +230,7 @@ def main():
 
     parser.add_argument(
         "report_path",
-        help="Path to npm audit JSON file"
+        help="Path to npm audit JSON output",
     )
 
     parser.add_argument(
@@ -278,9 +238,9 @@ def main():
         nargs="?",
         default=os.environ.get(
             "RELEASE_NAME",
-            "unspecified-release"
+            "unspecified-release",
         ),
-        help="Release name"
+        help="Release name",
     )
 
     parser.add_argument(
@@ -293,38 +253,38 @@ def main():
             "critical",
         ],
         default=None,
-        help="Minimum severity to include"
+        help="Only include vulnerabilities at or above this severity",
     )
 
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Maximum number of vulnerabilities"
+        help="Only include the top N vulnerabilities",
     )
 
     args = parser.parse_args()
 
-    # -----------------------------------------------------
-    # Read audit report
-    # -----------------------------------------------------
+    # ---------------------------------------------
+    # Read npm audit report
+    # ---------------------------------------------
     with open(
         args.report_path,
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as f:
         audit_report = json.load(f)
 
-    # -----------------------------------------------------
+    # ---------------------------------------------
     # Extract records
-    # -----------------------------------------------------
+    # ---------------------------------------------
     records = list(
         extract_records(audit_report)
     )
 
-    # -----------------------------------------------------
-    # Sort highest severity first
-    # -----------------------------------------------------
+    # ---------------------------------------------
+    # Highest severity first
+    # ---------------------------------------------
     records.sort(
         key=lambda r: (
             severity_rank(r["severity"]),
@@ -333,9 +293,9 @@ def main():
         )
     )
 
-    # -----------------------------------------------------
+    # ---------------------------------------------
     # Minimum severity filter
-    # -----------------------------------------------------
+    # ---------------------------------------------
     if args.min_severity:
 
         minimum_rank = severity_rank(
@@ -350,62 +310,62 @@ def main():
             ) <= minimum_rank
         ]
 
-    # -----------------------------------------------------
-    # Limit number of vulnerabilities
-    # -----------------------------------------------------
+    # ---------------------------------------------
+    # Apply limit
+    # ---------------------------------------------
     if args.limit:
         records = records[:args.limit]
 
-    # -----------------------------------------------------
+    # ---------------------------------------------
     # Flatten records
-    # -----------------------------------------------------
-    flattened_records = []
+    # ---------------------------------------------
+    flattened = []
 
     for record in records:
 
         fields = [
             sanitize(
                 record["advisory_id"],
-                60
+                60,
             ),
 
             sanitize(
                 record["severity"],
-                20
+                20,
             ),
 
             sanitize(
                 record["package"],
-                80
+                80,
             ),
 
             sanitize(
                 record["range"],
-                60
+                60,
             ),
 
             sanitize(
                 record["cvss_score"],
-                20
+                20,
             ),
 
             sanitize(
                 record["title"],
-                180
+                180,
             ),
         ]
 
-        flattened_records.append(
+        flattened.append(
             FIELD_SEP.join(fields)
         )
 
     vuln_items = RECORD_SEP.join(
-        flattened_records
+        flattened
     )
 
-    # -----------------------------------------------------
+    # ---------------------------------------------
     # Harness output variables
-    # -----------------------------------------------------
+    # ---------------------------------------------
     print(
         f"RELEASE_NAME={args.release_name}"
     )
@@ -418,28 +378,28 @@ def main():
         f"VULN_ITEMS={vuln_items}"
     )
 
-    # -----------------------------------------------------
-    # Human-readable log
-    # -----------------------------------------------------
+    # ---------------------------------------------
+    # Human-readable pipeline log
+    # ---------------------------------------------
     print(
         "",
-        file=sys.stderr
+        file=sys.stderr,
     )
 
     print(
         "============================================================",
-        file=sys.stderr
+        file=sys.stderr,
     )
 
     print(
         f"Found {len(records)} vulnerabilities "
         f"for release '{args.release_name}'",
-        file=sys.stderr
+        file=sys.stderr,
     )
 
     print(
         "============================================================",
-        file=sys.stderr
+        file=sys.stderr,
     )
 
     for record in records:
@@ -450,7 +410,7 @@ def main():
             f"{record['package']} - "
             f"CVSS: {record['cvss_score']} - "
             f"{record['title']}",
-            file=sys.stderr
+            file=sys.stderr,
         )
 
 
