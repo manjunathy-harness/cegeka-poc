@@ -126,15 +126,32 @@ pipeline:
 
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
 
-                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_ITEMS_1="$(grep '^VULN_ITEMS_1=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      export VULN_ITEMS_2="$(grep '^VULN_ITEMS_2=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      export VULN_ITEMS_3="$(grep '^VULN_ITEMS_3=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      export VULN_ITEMS_4="$(grep '^VULN_ITEMS_4=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      export VULN_ITEMS_5="$(grep '^VULN_ITEMS_5=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
-                      echo "VULN_ITEMS=$VULN_ITEMS"
+
+                      echo "VULN_ITEMS_1=$VULN_ITEMS_1"
+                      echo "VULN_ITEMS_2=$VULN_ITEMS_2"
+                      echo "VULN_ITEMS_3=$VULN_ITEMS_3"
+                      echo "VULN_ITEMS_4=$VULN_ITEMS_4"
+                      echo "VULN_ITEMS_5=$VULN_ITEMS_5"
                     outputVariables:
                       - name: RELEASE_NAME
                       - name: VULN_COUNT
-                      - name: VULN_ITEMS
+                      - name: VULN_ITEMS_1
+                      - name: VULN_ITEMS_2
+                      - name: VULN_ITEMS_3
+                      - name: VULN_ITEMS_4
+                      - name: VULN_ITEMS_5
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
@@ -170,11 +187,11 @@ pipeline:
                   timeout: 5m
               - step:
                   type: JiraCreate
-                  name: Create_Child_Vulnerability_Ticket
-                  identifier: Create_Child_Vulnerability_Ticket
+                  name: Create_Child_Vulnerability_Tickets_1
+                  identifier: Create_Child_Vulnerability_Tickets_1
                   when:
                     stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_1> != ""
                   spec:
                     connectorRef: cegekapocjira
                     projectKey: SCRUM
@@ -205,7 +222,163 @@ pipeline:
                           type: MarkAsSuccess
                   strategy:
                     repeat:
-                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
+                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_1.split("@@@")>
+                      maxConcurrency: 1
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Vulnerability_Tickets_2
+                  identifier: Create_Child_Vulnerability_Tickets_2
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_2> != ""
+                  spec:
+                    connectorRef: cegekapocjira
+                    projectKey: SCRUM
+                    issueType: Task
+                    fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"##\")[1]>] <+repeat.item.split(\"##\")[0]> in <+repeat.item.split(\"##\")[2]>"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+repeat.item.split("##")[0]>
+                          Severity: <+repeat.item.split("##")[1]>
+                          Package: <+repeat.item.split("##")[2]>
+                          Vulnerable range: <+repeat.item.split("##")[3]>
+                          CVSS score: <+repeat.item.split("##")[4]>
+                          Details: <+repeat.item.split("##")[5]>
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                  timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: MarkAsSuccess
+                  strategy:
+                    repeat:
+                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_2.split("@@@")>
+                      maxConcurrency: 1
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Vulnerability_Tickets_3
+                  identifier: Create_Child_Vulnerability_Tickets_3
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_3> != ""
+                  spec:
+                    connectorRef: cegekapocjira
+                    projectKey: SCRUM
+                    issueType: Task
+                    fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"##\")[1]>] <+repeat.item.split(\"##\")[0]> in <+repeat.item.split(\"##\")[2]>"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+repeat.item.split("##")[0]>
+                          Severity: <+repeat.item.split("##")[1]>
+                          Package: <+repeat.item.split("##")[2]>
+                          Vulnerable range: <+repeat.item.split("##")[3]>
+                          CVSS score: <+repeat.item.split("##")[4]>
+                          Details: <+repeat.item.split("##")[5]>
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                  timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: MarkAsSuccess
+                  strategy:
+                    repeat:
+                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_3.split("@@@")>
+                      maxConcurrency: 1
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Vulnerability_Tickets_4
+                  identifier: Create_Child_Vulnerability_Tickets_4
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_4> != ""
+                  spec:
+                    connectorRef: cegekapocjira
+                    projectKey: SCRUM
+                    issueType: Task
+                    fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"##\")[1]>] <+repeat.item.split(\"##\")[0]> in <+repeat.item.split(\"##\")[2]>"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+repeat.item.split("##")[0]>
+                          Severity: <+repeat.item.split("##")[1]>
+                          Package: <+repeat.item.split("##")[2]>
+                          Vulnerable range: <+repeat.item.split("##")[3]>
+                          CVSS score: <+repeat.item.split("##")[4]>
+                          Details: <+repeat.item.split("##")[5]>
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                  timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: MarkAsSuccess
+                  strategy:
+                    repeat:
+                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_4.split("@@@")>
+                      maxConcurrency: 1
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Vulnerability_Tickets_5
+                  identifier: Create_Child_Vulnerability_Tickets_5
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_5> != ""
+                  spec:
+                    connectorRef: cegekapocjira
+                    projectKey: SCRUM
+                    issueType: Task
+                    fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"##\")[1]>] <+repeat.item.split(\"##\")[0]> in <+repeat.item.split(\"##\")[2]>"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+repeat.item.split("##")[0]>
+                          Severity: <+repeat.item.split("##")[1]>
+                          Package: <+repeat.item.split("##")[2]>
+                          Vulnerable range: <+repeat.item.split("##")[3]>
+                          CVSS score: <+repeat.item.split("##")[4]>
+                          Details: <+repeat.item.split("##")[5]>
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                  timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: MarkAsSuccess
+                  strategy:
+                    repeat:
+                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS_5.split("@@@")>
                       maxConcurrency: 1
               - step:
                   type: JiraUpdate
