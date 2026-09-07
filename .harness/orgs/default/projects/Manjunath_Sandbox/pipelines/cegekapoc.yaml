@@ -96,9 +96,6 @@ pipeline:
                   identifier: Parse_Vulnerabilities
                   spec:
                     shell: Sh
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
 
@@ -126,32 +123,36 @@ pipeline:
 
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
 
-                      export VULN_ITEMS_1="$(grep '^VULN_ITEMS_1=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      export VULN_ITEMS_2="$(grep '^VULN_ITEMS_2=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      export VULN_ITEMS_3="$(grep '^VULN_ITEMS_3=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      export VULN_ITEMS_4="$(grep '^VULN_ITEMS_4=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      export VULN_ITEMS_5="$(grep '^VULN_ITEMS_5=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
-
-                      echo "VULN_ITEMS_1=$VULN_ITEMS_1"
-                      echo "VULN_ITEMS_2=$VULN_ITEMS_2"
-                      echo "VULN_ITEMS_3=$VULN_ITEMS_3"
-                      echo "VULN_ITEMS_4=$VULN_ITEMS_4"
-                      echo "VULN_ITEMS_5=$VULN_ITEMS_5"
+                      echo "VULN_ITEMS=$VULN_ITEMS"
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     outputVariables:
                       - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
                       - name: VULN_COUNT
+                        type: String
+                        value: VULN_COUNT
                       - name: VULN_ITEMS_1
+                        type: String
+                        value: VULN_ITEMS_1
                       - name: VULN_ITEMS_2
+                        type: String
+                        value: VULN_ITEMS_2
                       - name: VULN_ITEMS_3
+                        type: String
+                        value: VULN_ITEMS_3
                       - name: VULN_ITEMS_4
+                        type: String
+                        value: VULN_ITEMS_4
                       - name: VULN_ITEMS_5
+                        type: String
+                        value: VULN_ITEMS_5
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
