@@ -29,7 +29,7 @@ pipeline:
     - name: min_severity_for_demo
       type: String
       required: false
-      value: high
+      value: low
     - name: run_mode
       type: String
       required: false
