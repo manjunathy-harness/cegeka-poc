@@ -94,6 +94,9 @@ pipeline:
                   identifier: Parse_Vulnerabilities
                   spec:
                     shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
 
@@ -126,19 +129,10 @@ pipeline:
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
                       echo "VULN_ITEMS=$VULN_ITEMS"
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     outputVariables:
                       - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
                       - name: VULN_COUNT
-                        type: String
-                        value: VULN_COUNT
                       - name: VULN_ITEMS
-                        type: String
-                        value: VULN_ITEMS
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
