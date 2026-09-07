@@ -178,6 +178,12 @@ pipeline:
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
                   timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: Ignore
                   strategy:
                     repeat:
                       items: <+ <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>.split("@@@") >
