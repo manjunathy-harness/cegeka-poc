@@ -181,10 +181,6 @@ pipeline:
                     projectKey: SCRUM
                     issueType: Task
                     fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                       - name: Description
                         value: |-
                           Advisory / CVE: <+repeat.item.split("~")[0]>
@@ -197,6 +193,10 @@ pipeline:
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                   timeout: 5m
                   failureStrategies:
                     - onFailure:
@@ -207,7 +207,7 @@ pipeline:
                   strategy:
                     repeat:
                       items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 1
+                      maxConcurrency: 5
               - step:
                   type: JiraUpdate
                   name: Mark_Reverification_Clean
