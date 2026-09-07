@@ -140,21 +140,14 @@ pipeline:
                     stageStatus: Success
                     condition: <+pipeline.variables.run_mode> != "reverify" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
                   spec:
-                    connectorRef: YOUR_JIRA_CONNECTOR
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_parent_issue_type>
+                    connectorRef: cegekapocjira
+                    projectKey: SCRUM
+                    issueType: Epic
                     fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: Security scan results - <+pipeline.variables.release_name> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
-                      - name: Description
-                        value: |-
-                          Automated security scan for release <+pipeline.variables.release_name>.
-
-                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
-
-                          Each vulnerability has been filed as a linked child ticket below.
-
-                          Pipeline execution: <+pipeline.executionUrl>
+                        value: Release test
                   timeout: 5m
               - step:
                   type: JiraCreate
@@ -164,24 +157,14 @@ pipeline:
                     stageStatus: Success
                     condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
                   spec:
-                    connectorRef: YOUR_JIRA_CONNECTOR
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_child_issue_type>
+                    connectorRef: cegekapocjira
+                    projectKey: SCRUM
+                    issueType: Task
                     fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: "[<+ <+repeat.item>.split(\"##\")[1] >] <+ <+repeat.item>.split(\"##\")[0] > in <+ <+repeat.item>.split(\"##\")[2] > (<+pipeline.variables.release_name>)"
-                      - name: Description
-                        value: |-
-                          Advisory / CVE: <+ <+repeat.item>.split("##")[0] >
-                          Severity: <+ <+repeat.item>.split("##")[1] >
-                          Package: <+ <+repeat.item>.split("##")[2] >
-                          Vulnerable range: <+ <+repeat.item>.split("##")[3] >
-                          CVSS score: <+ <+repeat.item>.split("##")[4] >
-                          Details: <+ <+repeat.item>.split("##")[5] >
-
-                          Release: <+pipeline.variables.release_name>
-                      - name: Parent
-                        value: "<+ <+pipeline.variables.run_mode> == \"reverify\" ? <+pipeline.variables.parent_issue_key> : <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key> >"
+                        value: Child ticket test
                   timeout: 5m
                   strategy:
                     repeat:
@@ -195,10 +178,8 @@ pipeline:
                     stageStatus: Success
                     condition: <+pipeline.variables.run_mode> == "reverify" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> == "0"
                   spec:
-                    connectorRef: YOUR_JIRA_CONNECTOR
+                    connectorRef: cegekapocjira
                     issueKey: <+pipeline.variables.parent_issue_key>
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_parent_issue_type>
                     fields:
                       - name: Labels
                         value: reverified-clean
