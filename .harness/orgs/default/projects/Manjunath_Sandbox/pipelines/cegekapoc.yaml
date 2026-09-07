@@ -94,6 +94,9 @@ pipeline:
                   identifier: Parse_Vulnerabilities
                   spec:
                     shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
 
@@ -126,19 +129,10 @@ pipeline:
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
                       echo "VULN_ITEMS=$VULN_ITEMS"
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     outputVariables:
                       - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
                       - name: VULN_COUNT
-                        type: String
-                        value: VULN_COUNT
                       - name: VULN_ITEMS
-                        type: String
-                        value: VULN_ITEMS
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
@@ -187,15 +181,15 @@ pipeline:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: "[<+ <+repeat.item>.split(\"##\")[1] >] <+ <+repeat.item>.split(\"##\")[0] > in <+ <+repeat.item>.split(\"##\")[2] >"
+                        value: "[<+<+repeat.item>.split(\"##\")[1]>] <+<+repeat.item>.split(\"##\")[0]> in <+<+repeat.item>.split(\"##\")[2]>"
                       - name: Description
                         value: |-
-                          Advisory / CVE: <+ <+repeat.item>.split("##")[0] >
-                          Severity: <+ <+repeat.item>.split("##")[1] >
-                          Package: <+ <+repeat.item>.split("##")[2] >
-                          Vulnerable range: <+ <+repeat.item>.split("##")[3] >
-                          CVSS score: <+ <+repeat.item>.split("##")[4] >
-                          Details: <+ <+repeat.item>.split("##")[5] >
+                          Advisory / CVE: <+<+repeat.item>.split("##")[0]>
+                          Severity: <+<+repeat.item>.split("##")[1]>
+                          Package: <+<+repeat.item>.split("##")[2]>
+                          Vulnerable range: <+<+repeat.item>.split("##")[3]>
+                          CVSS score: <+<+repeat.item>.split("##")[4]>
+                          Details: <+<+repeat.item>.split("##")[5]>
 
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
@@ -209,7 +203,7 @@ pipeline:
                           type: MarkAsSuccess
                   strategy:
                     repeat:
-                      items: <+ <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>.split("@@@") >
+                      items: <+<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>.split("@@@")>
                       maxConcurrency: 1
               - step:
                   type: JiraUpdate
