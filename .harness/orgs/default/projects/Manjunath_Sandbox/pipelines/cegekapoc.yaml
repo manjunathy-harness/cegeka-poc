@@ -106,14 +106,23 @@ pipeline:
                         SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
                       fi
 
-                      python3 scripts/parse_npm_audit.py /harness/npm-audit.json "$RELEASE_NAME" $SEVERITY_FLAG \
+                      python3 scripts/parse_npm_audit.py \
+                        /harness/npm-audit.json \
+                        "$RELEASE_NAME" \
+                        $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
 
+                      echo "===== vuln_vars.env ====="
                       cat /harness/vuln_vars.env
+                      echo "========================="
 
-                      export RELEASE_NAME=$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)
-                      export VULN_COUNT=$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)
-                      export VULN_ITEMS=$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)
+                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "VULN_COUNT=$VULN_COUNT"
+                      echo "VULN_ITEMS=$VULN_ITEMS"
                     outputVariables:
                       - name: RELEASE_NAME
                       - name: VULN_COUNT
@@ -166,15 +175,15 @@ pipeline:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: "[<+repeat.item.split(\"##\")[1]>] <+repeat.item.split(\"##\")[0]> in <+repeat.item.split(\"##\")[2]>"
+                        value: "[<+repeat.item.split(\"|||\")[1]>] <+repeat.item.split(\"|||\")[0]> in <+repeat.item.split(\"|||\")[2]>"
                       - name: Description
                         value: |-
-                          Advisory / CVE: <+repeat.item.split("##")[0]>
-                          Severity: <+repeat.item.split("##")[1]>
-                          Package: <+repeat.item.split("##")[2]>
-                          Vulnerable range: <+repeat.item.split("##")[3]>
-                          CVSS score: <+repeat.item.split("##")[4]>
-                          Details: <+repeat.item.split("##")[5]>
+                          Advisory / CVE: <+repeat.item.split("|||")[0]>
+                          Severity: <+repeat.item.split("|||")[1]>
+                          Package: <+repeat.item.split("|||")[2]>
+                          Vulnerable range: <+repeat.item.split("|||")[3]>
+                          CVSS score: <+repeat.item.split("|||")[4]>
+                          Details: <+repeat.item.split("|||")[5]>
 
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
