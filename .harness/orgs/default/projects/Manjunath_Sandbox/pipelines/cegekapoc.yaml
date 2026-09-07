@@ -1,0 +1,205 @@
+pipeline:
+  name: cegeka-poc
+  identifier: cegekapoc
+  projectIdentifier: Manjunath_Sandbox
+  orgIdentifier: default
+  tags: {}
+  properties:
+    ci:
+      codebase:
+        connectorRef: cegekapoc
+        build: <+input>
+  variables:
+    - name: release_name
+      type: String
+      description: Release/version name used to title the parent Jira ticket
+      required: true
+      value: <+input>
+    - name: jira_project_key
+      type: String
+      description: Jira project key to file tickets in
+      required: true
+      value: <+input>
+    - name: jira_parent_issue_type
+      type: String
+      description: Jira issue type to use for the parent release ticket
+      required: false
+      value: Task
+    - name: jira_child_issue_type
+      type: String
+      description: Jira issue type to use for each vulnerability (must be a valid sub-task type for jira_parent_issue_type in your project)
+      required: false
+      value: Sub-task
+    - name: min_severity_for_demo
+      type: String
+      description: Optional filter passed to the parser script (e.g. "high") to keep a LIVE DEMO fast - a real scan can produce 30-50+ findings. Leave blank for no filtering.
+      required: false
+      value: high
+    - name: run_mode
+      type: String
+      description: "\"initial\" (default, for manual/first runs - files a new parent ticket) or \"reverify\" (set by the re-verification trigger below - reuses parent_issue_key instead of creating a new parent)."
+      required: false
+      value: <+input>.default(initial)
+    - name: parent_issue_key
+      type: String
+      description: Only used when run_mode is "reverify" - the existing release's parent Jira issue key to reuse (e.g. "SEC-142"), supplied by the Jira automation rule's webhook payload. Ignored for a normal "initial" run.
+      required: false
+      value: <+input>.default(none)
+  stages:
+    - stage:
+        name: Build_And_Scan
+        identifier: Build_And_Scan
+        description: Build the sample app, run the STO OWASP scan, and flatten vulnerabilities for the Jira automation stage
+        type: CI
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Install_Dependencies
+                  identifier: Install_Dependencies
+                  spec:
+                    shell: Sh
+                    command: |-
+                      cd sample-app
+                      npm install --package-lock-only
+              - step:
+                  type: Owasp
+                  name: OWASP_Dependency_Check
+                  identifier: OWASP_Dependency_Check
+                  spec:
+                    mode: orchestration
+                    config: default
+                    target:
+                      type: repository
+                      name: <+codebase.repoUrl>
+                      variant: <+codebase.branch>
+                      workspace: sample-app
+                    advanced:
+                      log:
+                        level: info
+                    privileged: true
+              - step:
+                  type: Run
+                  name: Run_NPM_Audit
+                  identifier: Run_NPM_Audit
+                  spec:
+                    shell: Sh
+                    command: |-
+                      cd sample-app
+                      npm audit --json > /harness/npm-audit.json || true
+                      cat /harness/npm-audit.json
+              - step:
+                  type: Run
+                  name: Parse_Vulnerabilities
+                  identifier: Parse_Vulnerabilities
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
+                    command: |-
+                      set -e
+                      SEVERITY_FLAG=""
+                      if [ -n "$MIN_SEVERITY" ]; then
+                        SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
+                      fi
+
+                      python3 scripts/parse_npm_audit.py /harness/npm-audit.json "$RELEASE_NAME" $SEVERITY_FLAG \
+                        > /harness/vuln_vars.env
+
+                      cat /harness/vuln_vars.env
+
+                      export RELEASE_NAME=$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)
+                      export VULN_COUNT=$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)
+                      export VULN_ITEMS=$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)
+                    outputVariables:
+                      - name: RELEASE_NAME
+                      - name: VULN_COUNT
+                      - name: VULN_ITEMS
+    - stage:
+        name: Jira_Automation
+        identifier: Jira_Automation
+        description: File a parent Jira ticket for the release, then one child sub-task per vulnerability found
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: JiraCreate
+                  name: Create_Parent_Release_Ticket
+                  identifier: Create_Parent_Release_Ticket
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.variables.run_mode> != "reverify" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                  spec:
+                    connectorRef: YOUR_JIRA_CONNECTOR
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_parent_issue_type>
+                    fields:
+                      - name: Summary
+                        value: Security scan results - <+pipeline.variables.release_name> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                      - name: Description
+                        value: |-
+                          Automated security scan for release <+pipeline.variables.release_name>.
+
+                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+
+                          Each vulnerability has been filed as a linked child ticket below.
+
+                          Pipeline execution: <+pipeline.executionUrl>
+                  timeout: 5m
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Vulnerability_Ticket
+                  identifier: Create_Child_Vulnerability_Ticket
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                  spec:
+                    connectorRef: YOUR_JIRA_CONNECTOR
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_child_issue_type>
+                    fields:
+                      - name: Summary
+                        value: "[<+ <+repeat.item>.split(\"##\")[1] >] <+ <+repeat.item>.split(\"##\")[0] > in <+ <+repeat.item>.split(\"##\")[2] > (<+pipeline.variables.release_name>)"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+ <+repeat.item>.split("##")[0] >
+                          Severity: <+ <+repeat.item>.split("##")[1] >
+                          Package: <+ <+repeat.item>.split("##")[2] >
+                          Vulnerable range: <+ <+repeat.item>.split("##")[3] >
+                          CVSS score: <+ <+repeat.item>.split("##")[4] >
+                          Details: <+ <+repeat.item>.split("##")[5] >
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: "<+ <+pipeline.variables.run_mode> == \"reverify\" ? <+pipeline.variables.parent_issue_key> : <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key> >"
+                  timeout: 5m
+                  strategy:
+                    repeat:
+                      items: <+ <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>.split("@@@") >
+                      maxConcurrency: 3
+              - step:
+                  type: JiraUpdate
+                  name: Mark_Reverification_Clean
+                  identifier: Mark_Reverification_Clean
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.variables.run_mode> == "reverify" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> == "0"
+                  spec:
+                    connectorRef: YOUR_JIRA_CONNECTOR
+                    issueKey: <+pipeline.variables.parent_issue_key>
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_parent_issue_type>
+                    fields:
+                      - name: Labels
+                        value: reverified-clean
+                  timeout: 5m
