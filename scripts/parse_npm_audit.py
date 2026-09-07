@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-parse_npm_audit.py
-
-Reads an npm audit --json report and flattens every distinct vulnerability
-(advisory) into a single delimited string that a Harness Repeat strategy
-can iterate over.
-
-Each item in VULN_ITEMS contains 6 fields separated by ##:
-
-  ADVISORY_ID##SEVERITY##PACKAGE##VULNERABLE_RANGE##CVSS_SCORE##TITLE
-
-Multiple vulnerability records are separated by @@@.
-
-Output:
-
-  RELEASE_NAME=<release name>
-  VULN_COUNT=<number of distinct advisories found>
-  VULN_ITEMS=<record1@@@record2@@@record3>
-"""
-
 import argparse
 import json
 import os
@@ -29,8 +9,7 @@ import sys
 FIELD_SEP = "##"
 RECORD_SEP = "@@@"
 
-# Remove characters that can interfere with the delimiter structure.
-# Keep "#" out of fields so "##" remains safe as a separator.
+# Remove characters that can interfere with our delimiters.
 _SANITIZE_RE = re.compile(r"[#@<>+\r\n\t]")
 
 
@@ -71,17 +50,9 @@ def advisory_id_from(via_entry):
 
 
 def normalize_severity(raw_severity, cvss_score):
-    """
-    Determine severity using:
-      1. advisory severity
-      2. package severity
-      3. CVSS fallback
-      4. UNKNOWN
-    """
-
     severity = str(raw_severity or "").strip().upper()
 
-    valid_severities = {
+    valid = {
         "CRITICAL",
         "HIGH",
         "MODERATE",
@@ -90,7 +61,7 @@ def normalize_severity(raw_severity, cvss_score):
         "INFO",
     }
 
-    if severity in valid_severities:
+    if severity in valid:
         return severity
 
     try:
@@ -101,22 +72,22 @@ def normalize_severity(raw_severity, cvss_score):
     if score is not None:
         if score >= 9.0:
             return "CRITICAL"
-        elif score >= 7.0:
+
+        if score >= 7.0:
             return "HIGH"
-        elif score >= 4.0:
+
+        if score >= 4.0:
             return "MODERATE"
-        else:
-            return "LOW"
+
+        return "LOW"
 
     return "UNKNOWN"
 
 
 def extract_records(audit_report):
-    """Yield one normalized record per distinct advisory/package."""
-
     vulnerabilities = audit_report.get("vulnerabilities", {}) or {}
 
-    seen_advisories = set()
+    seen = set()
 
     for package_name, pkg_info in vulnerabilities.items():
 
@@ -127,8 +98,6 @@ def extract_records(audit_report):
 
         for via_entry in via_list:
 
-            # npm audit may contain strings in via for
-            # transitive dependency references.
             if not isinstance(via_entry, dict):
                 continue
 
@@ -139,14 +108,11 @@ def extract_records(audit_report):
                 package_name,
             )
 
-            if dedupe_key in seen_advisories:
+            if dedupe_key in seen:
                 continue
 
-            seen_advisories.add(dedupe_key)
+            seen.add(dedupe_key)
 
-            # -----------------------------
-            # CVSS
-            # -----------------------------
             cvss = via_entry.get("cvss") or {}
 
             cvss_score = cvss.get("score")
@@ -154,9 +120,6 @@ def extract_records(audit_report):
             if cvss_score in (None, ""):
                 cvss_score = "n/a"
 
-            # -----------------------------
-            # Severity
-            # -----------------------------
             raw_severity = (
                 via_entry.get("severity")
                 or pkg_info.get("severity")
@@ -168,27 +131,18 @@ def extract_records(audit_report):
                 cvss_score,
             )
 
-            # -----------------------------
-            # Package
-            # -----------------------------
             package = (
                 package_name
                 or pkg_info.get("name")
                 or "unknown"
             )
 
-            # -----------------------------
-            # Vulnerable range
-            # -----------------------------
             vulnerable_range = (
                 via_entry.get("range")
                 or pkg_info.get("range")
                 or "unknown"
             )
 
-            # -----------------------------
-            # Title
-            # -----------------------------
             title = (
                 via_entry.get("title")
                 or f"Vulnerability in {package}"
@@ -201,7 +155,6 @@ def extract_records(audit_report):
                 "range": vulnerable_range,
                 "cvss_score": cvss_score,
                 "title": title,
-                "url": via_entry.get("url", "") or "",
             }
 
 
@@ -224,13 +177,10 @@ def severity_rank(severity):
 
 def main():
 
-    parser = argparse.ArgumentParser(
-        description=__doc__
-    )
+    parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "report_path",
-        help="Path to npm audit JSON output",
+        "report_path"
     )
 
     parser.add_argument(
@@ -240,7 +190,6 @@ def main():
             "RELEASE_NAME",
             "unspecified-release",
         ),
-        help="Release name",
     )
 
     parser.add_argument(
@@ -253,21 +202,16 @@ def main():
             "critical",
         ],
         default=None,
-        help="Only include vulnerabilities at or above this severity",
     )
 
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Only include the top N vulnerabilities",
     )
 
     args = parser.parse_args()
 
-    # ---------------------------------------------
-    # Read npm audit report
-    # ---------------------------------------------
     with open(
         args.report_path,
         "r",
@@ -275,16 +219,10 @@ def main():
     ) as f:
         audit_report = json.load(f)
 
-    # ---------------------------------------------
-    # Extract records
-    # ---------------------------------------------
     records = list(
         extract_records(audit_report)
     )
 
-    # ---------------------------------------------
-    # Highest severity first
-    # ---------------------------------------------
     records.sort(
         key=lambda r: (
             severity_rank(r["severity"]),
@@ -293,9 +231,6 @@ def main():
         )
     )
 
-    # ---------------------------------------------
-    # Minimum severity filter
-    # ---------------------------------------------
     if args.min_severity:
 
         minimum_rank = severity_rank(
@@ -310,15 +245,15 @@ def main():
             ) <= minimum_rank
         ]
 
-    # ---------------------------------------------
-    # Apply limit
-    # ---------------------------------------------
     if args.limit:
         records = records[:args.limit]
 
-    # ---------------------------------------------
-    # Flatten records
-    # ---------------------------------------------
+    # ---------------------------------------------------------
+    # Flatten each vulnerability into:
+    #
+    # ADVISORY##SEVERITY##PACKAGE##RANGE##CVSS##TITLE
+    # ---------------------------------------------------------
+
     flattened = []
 
     for record in records:
@@ -328,30 +263,25 @@ def main():
                 record["advisory_id"],
                 60,
             ),
-
             sanitize(
                 record["severity"],
                 20,
             ),
-
             sanitize(
                 record["package"],
                 80,
             ),
-
             sanitize(
                 record["range"],
                 60,
             ),
-
             sanitize(
                 record["cvss_score"],
                 20,
             ),
-
             sanitize(
                 record["title"],
-                180,
+                120,
             ),
         ]
 
@@ -359,13 +289,35 @@ def main():
             FIELD_SEP.join(fields)
         )
 
-    vuln_items = RECORD_SEP.join(
-        flattened
-    )
+    # ---------------------------------------------------------
+    # Split vulnerabilities into small chunks.
+    #
+    # 10 records per output variable.
+    #
+    # This prevents one large output variable from becoming
+    # problematic when passed into the Jira Repeat strategy.
+    # ---------------------------------------------------------
 
-    # ---------------------------------------------
-    # Harness output variables
-    # ---------------------------------------------
+    chunk_size = 10
+
+    chunks = [
+        flattened[i:i + chunk_size]
+        for i in range(
+            0,
+            len(flattened),
+            chunk_size,
+        )
+    ]
+
+    # Always create five variables so the Harness YAML can
+    # reference the same variables every time.
+    while len(chunks) < 5:
+        chunks.append([])
+
+    # ---------------------------------------------------------
+    # Harness outputs
+    # ---------------------------------------------------------
+
     print(
         f"RELEASE_NAME={args.release_name}"
     )
@@ -374,13 +326,20 @@ def main():
         f"VULN_COUNT={len(records)}"
     )
 
-    print(
-        f"VULN_ITEMS={vuln_items}"
-    )
+    for index in range(5):
 
-    # ---------------------------------------------
-    # Human-readable pipeline log
-    # ---------------------------------------------
+        chunk = chunks[index]
+
+        value = RECORD_SEP.join(chunk)
+
+        print(
+            f"VULN_ITEMS_{index + 1}={value}"
+        )
+
+    # ---------------------------------------------------------
+    # Human-readable log
+    # ---------------------------------------------------------
+
     print(
         "",
         file=sys.stderr,
