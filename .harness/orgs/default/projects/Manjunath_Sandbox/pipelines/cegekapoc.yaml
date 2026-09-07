@@ -139,6 +139,15 @@ pipeline:
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
                         value: Release 3
+                      - name: Description
+                        value: |-
+                          Automated security scan for release <+pipeline.variables.release_name>.
+
+                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+
+                          Each vulnerability has been filed as a linked child ticket below.
+
+                          Pipeline execution: <+pipeline.executionUrl>
                   timeout: 5m
               - step:
                   type: JiraCreate
@@ -155,7 +164,19 @@ pipeline:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: Child vul 3
+                        value: "[<+ <+repeat.item>.split(\"##\")[1] >] <+ <+repeat.item>.split(\"##\")[0] > in <+ <+repeat.item>.split(\"##\")[2] >"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+ <+repeat.item>.split("##")[0] >
+                          Severity: <+ <+repeat.item>.split("##")[1] >
+                          Package: <+ <+repeat.item>.split("##")[2] >
+                          Vulnerable range: <+ <+repeat.item>.split("##")[3] >
+                          CVSS score: <+ <+repeat.item>.split("##")[4] >
+                          Details: <+ <+repeat.item>.split("##")[5] >
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
                   timeout: 5m
                   strategy:
                     repeat:
@@ -171,6 +192,8 @@ pipeline:
                   spec:
                     connectorRef: cegekapocjira
                     issueKey: <+pipeline.variables.parent_issue_key>
+                    projectKey: SCRUM
+                    issueType: Epic
                     fields:
                       - name: Labels
                         value: reverified-clean
