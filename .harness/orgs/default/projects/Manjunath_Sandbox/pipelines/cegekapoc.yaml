@@ -53,6 +53,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -144,7 +145,14 @@ pipeline:
 
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
+                      echo "=============================================="
+                      echo "Release Label"
+                      echo "=============================================="
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "RELEASE_LABEL=$RELEASE_LABEL"
+
+                      echo "=============================================="
 
                       export RELEASE_LABEL
                     outputVariables:
@@ -161,7 +169,7 @@ pipeline:
                     envVariables:
                       JIRA_URL: https://manjunath0328.atlassian.net
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
-                      JIRA_API_TOKEN: <+secrets.getValue("cegeka_jira_api_token")>
+                      JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
                       RELEASE_NAME: <+pipeline.variables.release_name>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
@@ -169,7 +177,7 @@ pipeline:
                       set -e
 
                       echo "=============================================="
-                      echo "Searching Jira for existing Epic"
+                      echo "Searching Jira for Existing Release Epic"
                       echo "=============================================="
 
                       echo "Jira URL: $JIRA_URL"
@@ -177,11 +185,19 @@ pipeline:
                       echo "Release Name: $RELEASE_NAME"
                       echo "Release Label: $RELEASE_LABEL"
 
-                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND (labels = \"${RELEASE_LABEL}\" OR summary ~ \"\\\"${RELEASE_NAME}\\\"\") ORDER BY created DESC"
+                      echo "=============================================="
 
-                      echo "=============================================="
-                      echo "JQL"
-                      echo "=============================================="
+                      # Search only Epics in the SCRUM project.
+                      #
+                      # We intentionally do NOT rely on Jira's text-search
+                      # matching for the release name.
+                      #
+                      # Jira returns the Epics and Python performs the
+                      # actual release-name matching.
+
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
+
+                      echo "JQL:"
                       echo "$JQL"
 
                       HTTP_RESPONSE_FILE="/tmp/jira-response.json"
@@ -190,87 +206,167 @@ pipeline:
                         -o "$HTTP_RESPONSE_FILE" \
                         -w "%{http_code}" \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                        -H "Accept: application/json" \
                         -G \
                         "${JIRA_URL}/rest/api/3/search/jql" \
                         --data-urlencode "jql=${JQL}" \
-                        --data-urlencode "maxResults=1")"
+                        --data-urlencode "maxResults=100" \
+                        --data-urlencode "fields=summary,status,issuetype,labels")"
 
                       echo "=============================================="
-                      echo "Jira HTTP Status: $HTTP_CODE"
+                      echo "Jira HTTP Status"
                       echo "=============================================="
 
-                      echo "Jira Response:"
-                      cat "$HTTP_RESPONSE_FILE"
-
-                      echo ""
+                      echo "$HTTP_CODE"
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira API lookup failed."
+                        echo "ERROR: Jira API request failed."
+                        echo "Response:"
+                        cat "$HTTP_RESPONSE_FILE"
                         exit 1
                       fi
 
-                      ISSUE_COUNT="$(python3 - "$HTTP_RESPONSE_FILE" <<'PY'
+                      echo "=============================================="
+                      echo "Jira API Response"
+                      echo "=============================================="
+
+                      cat "$HTTP_RESPONSE_FILE"
+
+                      echo ""
+                      echo "=============================================="
+                      echo "Inspecting Jira Epics"
+                      echo "=============================================="
+
+                      export RELEASE_NAME
+                      export RELEASE_LABEL
+                      export RESPONSE_FILE="$HTTP_RESPONSE_FILE"
+
+                      MATCH_RESULT="$(python3 - <<'PY'
                       import json
-                      import sys
+                      import os
+                      import re
 
-                      response_file = sys.argv[1]
+                      response_file = os.environ["RESPONSE_FILE"]
+                      release_name = os.environ.get("RELEASE_NAME", "").strip()
+                      release_label = os.environ.get("RELEASE_LABEL", "").strip()
 
-                      with open(response_file, "r") as f:
+                      with open(response_file, "r", encoding="utf-8") as f:
                           data = json.load(f)
 
                       issues = data.get("issues", [])
-                      print(len(issues))
+
+                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
+
+                      if not issues:
+                          print("EPIC_EXISTS=false")
+                          print("EPIC_KEY=")
+                          print("EPIC_STATUS=")
+                          print("EPIC_SUMMARY=")
+                          raise SystemExit(0)
+
+                      release_lower = release_name.lower()
+
+                      for issue in issues:
+
+                          key = issue.get("key", "")
+
+                          fields = issue.get("fields", {})
+
+                          summary = fields.get("summary", "") or ""
+
+                          status = (
+                              fields.get("status", {}) or {}
+                          ).get("name", "")
+
+                          issue_type = (
+                              fields.get("issuetype", {}) or {}
+                          ).get("name", "")
+
+                          labels = fields.get("labels", []) or []
+
+                          print(
+                              f"Checking Epic: "
+                              f"{key} | "
+                              f"Type={issue_type} | "
+                              f"Status={status} | "
+                              f"Summary={summary}"
+                          )
+
+                          # ------------------------------------------------
+                          # Make sure this is really an Epic.
+                          # ------------------------------------------------
+
+                          if issue_type.lower() != "epic":
+                              continue
+
+                          # ------------------------------------------------
+                          # Match release name in summary.
+                          #
+                          # Example:
+                          #
+                          # Security scan results - 1.0.0.28 - 5 vulnerabilities found
+                          #
+                          # RELEASE_NAME:
+                          # 1.0.0.28
+                          # ------------------------------------------------
+
+                          if release_lower in summary.lower():
+
+                              print("MATCH FOUND BY RELEASE NAME")
+
+                              print("EPIC_EXISTS=true")
+                              print(f"EPIC_KEY={key}")
+                              print(f"EPIC_STATUS={status}")
+                              print(f"EPIC_SUMMARY={summary}")
+
+                              raise SystemExit(0)
+
+                          # ------------------------------------------------
+                          # Also check the stable release label.
+                          # ------------------------------------------------
+
+                          for label in labels:
+
+                              if str(label).lower() == release_label.lower():
+
+                                  print("MATCH FOUND BY RELEASE LABEL")
+
+                                  print("EPIC_EXISTS=true")
+                                  print(f"EPIC_KEY={key}")
+                                  print(f"EPIC_STATUS={status}")
+                                  print(f"EPIC_SUMMARY={summary}")
+
+                                  raise SystemExit(0)
+
+                      print("NO MATCHING EPIC FOUND")
+
+                      print("EPIC_EXISTS=false")
+                      print("EPIC_KEY=")
+                      print("EPIC_STATUS=")
+                      print("EPIC_SUMMARY=")
                       PY
                       )"
 
-                      EPIC_EXISTS="false"
-                      EPIC_KEY=""
-                      EPIC_STATUS=""
+                      echo "=============================================="
+                      echo "MATCH RESULT"
+                      echo "=============================================="
 
-                      if [ "$ISSUE_COUNT" -gt 0 ]; then
+                      echo "$MATCH_RESULT"
 
-                        EPIC_EXISTS="true"
+                      echo "=============================================="
 
-                        EPIC_KEY="$(python3 - "$HTTP_RESPONSE_FILE" <<'PY'
-                      import json
-                      import sys
+                      EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
 
-                      response_file = sys.argv[1]
-
-                      with open(response_file, "r") as f:
-                          data = json.load(f)
-
-                      issues = data.get("issues", [])
-
-                      if issues:
-                          print(issues[0].get("key", ""))
-                      PY
-                        )"
-
-                        EPIC_STATUS="$(python3 - "$HTTP_RESPONSE_FILE" <<'PY'
-                      import json
-                      import sys
-
-                      response_file = sys.argv[1]
-
-                      with open(response_file, "r") as f:
-                          data = json.load(f)
-
-                      issues = data.get("issues", [])
-
-                      if issues:
-                          fields = issues[0].get("fields", {})
-                          status = fields.get("status", {})
-                          print(status.get("name", ""))
-                      PY
-                        )"
+                      if [ -z "$EPIC_EXISTS" ]; then
+                        EPIC_EXISTS="false"
                       fi
 
                       echo "=============================================="
-                      echo "Jira Lookup Results"
+                      echo "FINAL JIRA LOOKUP RESULT"
                       echo "=============================================="
 
-                      echo "ISSUE_COUNT=$ISSUE_COUNT"
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
                       echo "EPIC_STATUS=$EPIC_STATUS"
@@ -360,4 +456,4 @@ pipeline:
                   strategy:
                     repeat:
                       items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 1
+                      maxConcurrency: 5
