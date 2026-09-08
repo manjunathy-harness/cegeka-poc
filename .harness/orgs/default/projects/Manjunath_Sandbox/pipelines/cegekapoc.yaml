@@ -116,9 +116,7 @@ pipeline:
                       echo "=============================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
-
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-
                       export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
@@ -128,6 +126,30 @@ pipeline:
                       - name: RELEASE_NAME
                       - name: VULN_COUNT
                       - name: VULN_ITEMS
+              - step:
+                  type: Run
+                  name: Generate_Release_Label
+                  identifier: Generate_Release_Label
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                    command: |-
+                      set -e
+
+                      SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
+                        | tr '[:upper:]' '[:lower:]' \
+                        | sed 's/[^a-z0-9]/-/g' \
+                        | sed 's/--*/-/g' \
+                        | sed 's/^-//; s/-$//')"
+
+                      RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
+
+                      echo "RELEASE_LABEL=$RELEASE_LABEL"
+
+                      export RELEASE_LABEL
+                    outputVariables:
+                      - name: RELEASE_LABEL
               - step:
                   type: Run
                   name: Lookup_Existing_Jira_Epic
@@ -140,120 +162,82 @@ pipeline:
                     envVariables:
                       JIRA_URL: https://manjunath0328.atlassian.net
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
-                      JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      JIRA_API_TOKEN: <+secrets.getValue("cegeka_jira_api_token")>
+                      RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
                       set -e
 
                       echo "=============================================="
-                      echo "Searching Jira for existing release Epic"
+                      echo "Searching Jira for existing Epic"
                       echo "=============================================="
 
-                      echo "Release Name: $RELEASE_NAME"
-                      echo "Project Key: $JIRA_PROJECT_KEY"
+                      echo "Project: $JIRA_PROJECT_KEY"
+                      echo "Release Label: $RELEASE_LABEL"
 
-                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" ORDER BY created DESC"
 
-                      echo "JQL:"
-                      echo "$JQL"
-
-                      RESPONSE="$(curl -sS -f \
+                      RESPONSE="$(curl -sS \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
                         -G \
                         "${JIRA_URL}/rest/api/3/search/jql" \
                         --data-urlencode "jql=${JQL}" \
-                        --data-urlencode "maxResults=100" \
-                        --data-urlencode "fields=summary,status")"
+                        --data-urlencode "maxResults=1")"
 
                       echo "=============================================="
-                      echo "Jira Lookup Response"
+                      echo "Jira API response received"
                       echo "=============================================="
 
-                      echo "$RESPONSE"
-
-                      echo "=============================================="
-
-                      export RESPONSE
-                      export RELEASE_NAME
-
-                      MATCH_RESULT="$(python3 - <<'PY'
+                      ISSUE_COUNT="$(echo "$RESPONSE" | python3 -c '
                       import json
-                      import os
-
-                      response = os.environ.get("RESPONSE", "{}")
-                      release_name = os.environ.get("RELEASE_NAME", "")
+                      import sys
 
                       try:
-                          data = json.loads(response)
+                          data = json.load(sys.stdin)
+                          print(len(data.get("issues", [])))
+                      except Exception:
+                          print(0)
+                      ')"
 
-                          issues = data.get("issues", [])
+                      EPIC_EXISTS="false"
+                      EPIC_KEY=""
+                      EPIC_STATUS=""
 
-                          if not issues:
-                              issues = data.get("values", [])
+                      if [ "$ISSUE_COUNT" -gt 0 ]; then
+                        EPIC_EXISTS="true"
 
-                          expected_prefix = (
-                              f"Security scan results - {release_name} -"
-                          )
+                        EPIC_KEY="$(echo "$RESPONSE" | python3 -c '
+                        import json
+                        import sys
 
-                          for issue in issues:
-                              fields = issue.get("fields", {})
-                              summary = fields.get("summary", "")
+                        data = json.load(sys.stdin)
+                        issues = data.get("issues", [])
 
-                              if summary.startswith(expected_prefix):
-                                  key = issue.get("key", "")
-                                  status = fields.get(
-                                      "status",
-                                      {}
-                                  ).get("name", "")
+                        if issues:
+                            print(issues[0].get("key", ""))
+                        ')"
 
-                                  print("EPIC_EXISTS=true")
-                                  print(f"EPIC_KEY={key}")
-                                  print(f"EPIC_STATUS={status}")
-                                  print(f"EPIC_SUMMARY={summary}")
+                        EPIC_STATUS="$(echo "$RESPONSE" | python3 -c '
+                        import json
+                        import sys
 
-                                  raise SystemExit(0)
+                        data = json.load(sys.stdin)
+                        issues = data.get("issues", [])
 
-                          print("EPIC_EXISTS=false")
-                          print("EPIC_KEY=")
-                          print("EPIC_STATUS=")
-                          print("EPIC_SUMMARY=")
-
-                      except Exception as e:
-                          print("EPIC_EXISTS=false")
-                          print("EPIC_KEY=")
-                          print("EPIC_STATUS=")
-                          print("EPIC_SUMMARY=")
-                      PY
-                      )"
-
-                      echo "=============================================="
-                      echo "MATCH RESULT"
-                      echo "=============================================="
-
-                      echo "$MATCH_RESULT"
-
-                      echo "=============================================="
-
-                      EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2-)"
-
-                      EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2-)"
-
-                      EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2-)"
-
-                      if [ -z "$EPIC_EXISTS" ]; then
-                        EPIC_EXISTS="false"
+                        if issues:
+                            fields = issues[0].get("fields", {})
+                            status = fields.get("status", {})
+                            print(status.get("name", ""))
+                        ')"
                       fi
 
                       echo "=============================================="
-                      echo "FINAL JIRA LOOKUP RESULT"
+                      echo "Jira Lookup Results"
                       echo "=============================================="
 
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
                       echo "EPIC_STATUS=$EPIC_STATUS"
-
-                      echo "=============================================="
 
                       export EPIC_EXISTS
                       export EPIC_KEY
@@ -297,6 +281,8 @@ pipeline:
                           Each vulnerability has been filed as a linked child ticket below.
 
                           Pipeline execution: <+pipeline.executionUrl>
+                      - name: Labels
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                   timeout: 5m
               - step:
                   type: JiraCreate
@@ -336,4 +322,4 @@ pipeline:
                   strategy:
                     repeat:
                       items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
+                      maxConcurrency: 1
