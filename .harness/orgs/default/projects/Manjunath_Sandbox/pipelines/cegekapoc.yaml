@@ -30,14 +30,6 @@ pipeline:
       type: String
       required: false
       value: low
-    - name: run_mode
-      type: String
-      required: false
-      value: <+input>.default(initial)
-    - name: parent_issue_key
-      type: String
-      required: false
-      value: <+input>.default(none)
   stages:
     - stage:
         name: Build_And_Scan
@@ -136,10 +128,157 @@ pipeline:
                       - name: RELEASE_NAME
                       - name: VULN_COUNT
                       - name: VULN_ITEMS
+              - step:
+                  type: Run
+                  name: Lookup_Existing_Jira_Epic
+                  identifier: Lookup_Existing_Jira_Epic
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      JIRA_URL: https://manjunath0328.atlassian.net
+                      JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
+                      JIRA_API_TOKEN: <+secrets.getValue("cegeka_jira_api_token")>
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
+                    command: |-
+                      set -e
+
+                      echo "=============================================="
+                      echo "Searching Jira for existing Epic"
+                      echo "=============================================="
+
+                      # Create a safe label from release name.
+                      # Example:
+                      # Release 1.0
+                      # becomes
+                      # security-release-release-1-0
+
+                      SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
+                        | tr '[:upper:]' '[:lower:]' \
+                        | sed 's/[^a-z0-9]/-/g' \
+                        | sed 's/--*/-/g' \
+                        | sed 's/^-//; s/-$//')"
+
+                      RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
+
+                      echo "Release Label: $RELEASE_LABEL"
+
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" ORDER BY created DESC"
+
+                      echo "Searching Jira..."
+
+                      RESPONSE="$(curl -sS \
+                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                        -G \
+                        "${JIRA_URL}/rest/api/3/search/jql" \
+                        --data-urlencode "jql=${JQL}" \
+                        --data-urlencode "maxResults=1")"
+
+                      echo "Jira lookup completed."
+
+                      ISSUE_COUNT="$(echo "$RESPONSE" \
+                        | python3 -c '
+                      import json
+                      import sys
+
+                      try:
+                          data = json.load(sys.stdin)
+                          print(len(data.get("issues", [])))
+                      except Exception:
+                          print(0)
+                      ')"
+
+                      EPIC_EXISTS="false"
+                      EPIC_KEY=""
+                      EPIC_STATUS=""
+                      RELEASE_LABEL_OUT="$RELEASE_LABEL"
+
+                      if [ "$ISSUE_COUNT" -gt 0 ]; then
+
+                        EPIC_EXISTS="true"
+
+                        EPIC_KEY="$(echo "$RESPONSE" \
+                          | python3 -c '
+                        import json
+                        import sys
+
+                        data = json.load(sys.stdin)
+                        issues = data.get("issues", [])
+
+                        if issues:
+                            print(issues[0].get("key", ""))
+                        ')"
+
+                        EPIC_STATUS="$(echo "$RESPONSE" \
+                          | python3 -c '
+                        import json
+                        import sys
+
+                        data = json.load(sys.stdin)
+                        issues = data.get("issues", [])
+
+                        if issues:
+                            fields = issues[0].get("fields", {})
+                            status = fields.get("status", {})
+                            print(status.get("name", ""))
+                        ')"
+
+                      fi
+
+                      echo "=============================================="
+                      echo "Jira Lookup Results"
+                      echo "=============================================="
+
+                      echo "EPIC_EXISTS=$EPIC_EXISTS"
+                      echo "EPIC_KEY=$EPIC_KEY"
+                      echo "EPIC_STATUS=$EPIC_STATUS"
+                      echo "RELEASE_LABEL=$RELEASE_LABEL_OUT"
+
+                      echo "=============================================="
+
+                      export EPIC_EXISTS
+                      export EPIC_KEY
+                      export EPIC_STATUS
+                      export RELEASE_LABEL="$RELEASE_LABEL_OUT"
+                    outputVariables:
+                      - name: EPIC_EXISTS
+                      - name: EPIC_KEY
+                      - name: EPIC_STATUS
+                      - name: RELEASE_LABEL
+              - step:
+                  type: Run
+                  name: Generate_Release_Label
+                  identifier: Generate_Release_Label
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.variables.release_name>
+                    command: |-
+                      set -e
+
+                      SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
+                        | tr '[:upper:]' '[:lower:]' \
+                        | sed 's/[^a-z0-9]/-/g' \
+                        | sed 's/--*/-/g' \
+                        | sed 's/^-//; s/-$//')"
+
+                      RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
+
+                      echo "RELEASE_LABEL=$RELEASE_LABEL"
+
+                      export RELEASE_LABEL
+                    outputVariables:
+                      - name: RELEASE_LABEL
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
         type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
         spec:
           execution:
             steps:
@@ -149,11 +288,11 @@ pipeline:
                   identifier: Create_Parent_Release_Ticket
                   when:
                     stageStatus: Success
-                    condition: <+pipeline.variables.run_mode> != "reverify" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
                   spec:
                     connectorRef: cegekapocjira
-                    projectKey: SCRUM
-                    issueType: Epic
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_parent_issue_type>
                     fields:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
@@ -168,6 +307,8 @@ pipeline:
                           Each vulnerability has been filed as a linked child ticket below.
 
                           Pipeline execution: <+pipeline.executionUrl>
+                      - name: Labels
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                   timeout: 5m
               - step:
                   type: JiraCreate
@@ -175,12 +316,16 @@ pipeline:
                   identifier: Create_Child_Vulnerability_Ticket
                   when:
                     stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
                   spec:
                     connectorRef: cegekapocjira
-                    projectKey: SCRUM
-                    issueType: Task
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_child_issue_type>
                     fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                       - name: Description
                         value: |-
                           Advisory / CVE: <+repeat.item.split("~")[0]>
@@ -193,10 +338,6 @@ pipeline:
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                   timeout: 5m
                   failureStrategies:
                     - onFailure:
@@ -207,20 +348,4 @@ pipeline:
                   strategy:
                     repeat:
                       items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
-              - step:
-                  type: JiraUpdate
-                  name: Mark_Reverification_Clean
-                  identifier: Mark_Reverification_Clean
-                  when:
-                    stageStatus: Success
-                    condition: <+pipeline.variables.run_mode> == "reverify" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> == "0"
-                  spec:
-                    connectorRef: cegekapocjira
-                    issueKey: <+pipeline.variables.parent_issue_key>
-                    projectKey: SCRUM
-                    issueType: Epic
-                    fields:
-                      - name: Labels
-                        value: reverified-clean
-                  timeout: 5m
+                      maxConcurrency: 1
