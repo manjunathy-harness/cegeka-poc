@@ -153,19 +153,7 @@ pipeline:
                       echo "Release Name: $RELEASE_NAME"
                       echo "Project Key: $JIRA_PROJECT_KEY"
 
-                      # Stable part of the Epic summary.
-                      #
-                      # Example:
-                      #
-                      # Security scan results - 1.0.0.28 - 46 vulnerabilities found
-                      #
-                      # We search only:
-                      #
-                      # Security scan results - 1.0.0.28
-
-                      SEARCH_TEXT="Security scan results - ${RELEASE_NAME}"
-
-                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND summary ~ \"${SEARCH_TEXT}\" ORDER BY created DESC"
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
 
                       echo "JQL:"
                       echo "$JQL"
@@ -175,7 +163,7 @@ pipeline:
                         -G \
                         "${JIRA_URL}/rest/api/3/search/jql" \
                         --data-urlencode "jql=${JQL}" \
-                        --data-urlencode "maxResults=1" \
+                        --data-urlencode "maxResults=100" \
                         --data-urlencode "fields=summary,status")"
 
                       echo "=============================================="
@@ -186,67 +174,75 @@ pipeline:
 
                       echo "=============================================="
 
-                      EPIC_EXISTS="false"
-                      EPIC_KEY=""
-                      EPIC_STATUS=""
+                      export RESPONSE
+                      export RELEASE_NAME
 
-                      ISSUE_COUNT="$(echo "$RESPONSE" | python3 -c '
+                      MATCH_RESULT="$(python3 - <<'PY'
                       import json
-                      import sys
+                      import os
+
+                      response = os.environ.get("RESPONSE", "{}")
+                      release_name = os.environ.get("RELEASE_NAME", "")
 
                       try:
-                          data = json.load(sys.stdin)
+                          data = json.loads(response)
 
                           issues = data.get("issues", [])
 
                           if not issues:
                               issues = data.get("values", [])
 
-                          print(len(issues))
+                          expected_prefix = (
+                              f"Security scan results - {release_name} -"
+                          )
+
+                          for issue in issues:
+                              fields = issue.get("fields", {})
+                              summary = fields.get("summary", "")
+
+                              if summary.startswith(expected_prefix):
+                                  key = issue.get("key", "")
+                                  status = fields.get(
+                                      "status",
+                                      {}
+                                  ).get("name", "")
+
+                                  print("EPIC_EXISTS=true")
+                                  print(f"EPIC_KEY={key}")
+                                  print(f"EPIC_STATUS={status}")
+                                  print(f"EPIC_SUMMARY={summary}")
+
+                                  raise SystemExit(0)
+
+                          print("EPIC_EXISTS=false")
+                          print("EPIC_KEY=")
+                          print("EPIC_STATUS=")
+                          print("EPIC_SUMMARY=")
 
                       except Exception as e:
-                          print(0)
-                      ')"
+                          print("EPIC_EXISTS=false")
+                          print("EPIC_KEY=")
+                          print("EPIC_STATUS=")
+                          print("EPIC_SUMMARY=")
+                      PY
+                      )"
 
-                      echo "Issues found: $ISSUE_COUNT"
+                      echo "=============================================="
+                      echo "MATCH RESULT"
+                      echo "=============================================="
 
-                      if [ "$ISSUE_COUNT" -gt 0 ]; then
+                      echo "$MATCH_RESULT"
 
-                        EPIC_EXISTS="true"
+                      echo "=============================================="
 
-                        EPIC_KEY="$(echo "$RESPONSE" | python3 -c '
-                      import json
-                      import sys
+                      EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2-)"
 
-                      data = json.load(sys.stdin)
+                      EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2-)"
 
-                      issues = data.get("issues", [])
+                      EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2-)"
 
-                      if not issues:
-                          issues = data.get("values", [])
-
-                      if issues:
-                          print(issues[0].get("key", ""))
-                      ')"
-
-                        EPIC_STATUS="$(echo "$RESPONSE" | python3 -c '
-                      import json
-                      import sys
-
-                      data = json.load(sys.stdin)
-
-                      issues = data.get("issues", [])
-
-                      if not issues:
-                          issues = data.get("values", [])
-
-                      if issues:
-                          fields = issues[0].get("fields", {})
-                          status = fields.get("status", {})
-
-                          print(status.get("name", ""))
-                      ')"
-
+                      if [ -z "$EPIC_EXISTS" ]; then
+                        EPIC_EXISTS="false"
                       fi
 
                       echo "=============================================="
