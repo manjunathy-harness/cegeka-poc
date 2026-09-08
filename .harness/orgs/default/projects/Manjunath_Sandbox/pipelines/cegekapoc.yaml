@@ -348,4 +348,4 @@ pipeline:
                   strategy:
                     repeat:
                       items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 1
+                      maxConcurrency: 5
