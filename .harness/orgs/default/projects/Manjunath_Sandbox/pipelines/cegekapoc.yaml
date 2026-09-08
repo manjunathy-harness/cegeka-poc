@@ -53,7 +53,6 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -163,6 +162,7 @@ pipeline:
                       JIRA_URL: https://manjunath0328.atlassian.net
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka_jira_api_token")>
+                      RELEASE_NAME: <+pipeline.variables.release_name>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
@@ -172,12 +172,23 @@ pipeline:
                       echo "Searching Jira for existing Epic"
                       echo "=============================================="
 
+                      echo "Jira URL: $JIRA_URL"
                       echo "Project: $JIRA_PROJECT_KEY"
+                      echo "Release Name: $RELEASE_NAME"
                       echo "Release Label: $RELEASE_LABEL"
 
-                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" ORDER BY created DESC"
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND (labels = \"${RELEASE_LABEL}\" OR summary ~ \"\\\"${RELEASE_NAME}\\\"\") ORDER BY created DESC"
 
-                      RESPONSE="$(curl -sS \
+                      echo "=============================================="
+                      echo "JQL"
+                      echo "=============================================="
+                      echo "$JQL"
+
+                      HTTP_RESPONSE_FILE="/tmp/jira-response.json"
+
+                      HTTP_CODE="$(curl -sS \
+                        -o "$HTTP_RESPONSE_FILE" \
+                        -w "%{http_code}" \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
                         -G \
                         "${JIRA_URL}/rest/api/3/search/jql" \
@@ -185,59 +196,86 @@ pipeline:
                         --data-urlencode "maxResults=1")"
 
                       echo "=============================================="
-                      echo "Jira API response received"
+                      echo "Jira HTTP Status: $HTTP_CODE"
                       echo "=============================================="
 
-                      ISSUE_COUNT="$(echo "$RESPONSE" | python3 -c '
+                      echo "Jira Response:"
+                      cat "$HTTP_RESPONSE_FILE"
+
+                      echo ""
+
+                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                        echo "ERROR: Jira API lookup failed."
+                        exit 1
+                      fi
+
+                      ISSUE_COUNT="$(python3 - "$HTTP_RESPONSE_FILE" <<'PY'
                       import json
                       import sys
 
-                      try:
-                          data = json.load(sys.stdin)
-                          print(len(data.get("issues", [])))
-                      except Exception:
-                          print(0)
-                      ')"
+                      response_file = sys.argv[1]
+
+                      with open(response_file, "r") as f:
+                          data = json.load(f)
+
+                      issues = data.get("issues", [])
+                      print(len(issues))
+                      PY
+                      )"
 
                       EPIC_EXISTS="false"
                       EPIC_KEY=""
                       EPIC_STATUS=""
 
                       if [ "$ISSUE_COUNT" -gt 0 ]; then
+
                         EPIC_EXISTS="true"
 
-                        EPIC_KEY="$(echo "$RESPONSE" | python3 -c '
-                        import json
-                        import sys
+                        EPIC_KEY="$(python3 - "$HTTP_RESPONSE_FILE" <<'PY'
+                      import json
+                      import sys
 
-                        data = json.load(sys.stdin)
-                        issues = data.get("issues", [])
+                      response_file = sys.argv[1]
 
-                        if issues:
-                            print(issues[0].get("key", ""))
-                        ')"
+                      with open(response_file, "r") as f:
+                          data = json.load(f)
 
-                        EPIC_STATUS="$(echo "$RESPONSE" | python3 -c '
-                        import json
-                        import sys
+                      issues = data.get("issues", [])
 
-                        data = json.load(sys.stdin)
-                        issues = data.get("issues", [])
+                      if issues:
+                          print(issues[0].get("key", ""))
+                      PY
+                        )"
 
-                        if issues:
-                            fields = issues[0].get("fields", {})
-                            status = fields.get("status", {})
-                            print(status.get("name", ""))
-                        ')"
+                        EPIC_STATUS="$(python3 - "$HTTP_RESPONSE_FILE" <<'PY'
+                      import json
+                      import sys
+
+                      response_file = sys.argv[1]
+
+                      with open(response_file, "r") as f:
+                          data = json.load(f)
+
+                      issues = data.get("issues", [])
+
+                      if issues:
+                          fields = issues[0].get("fields", {})
+                          status = fields.get("status", {})
+                          print(status.get("name", ""))
+                      PY
+                        )"
                       fi
 
                       echo "=============================================="
                       echo "Jira Lookup Results"
                       echo "=============================================="
 
+                      echo "ISSUE_COUNT=$ISSUE_COUNT"
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
                       echo "EPIC_STATUS=$EPIC_STATUS"
+
+                      echo "=============================================="
 
                       export EPIC_EXISTS
                       export EPIC_KEY
