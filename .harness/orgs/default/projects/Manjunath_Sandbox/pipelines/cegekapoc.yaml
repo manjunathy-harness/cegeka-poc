@@ -145,19 +145,8 @@ pipeline:
 
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
-                      echo "=============================================="
-                      echo "Release Name"
-                      echo "=============================================="
-
-                      echo "$RELEASE_NAME"
-
-                      echo "=============================================="
-                      echo "Release Label"
-                      echo "=============================================="
-
-                      echo "$RELEASE_LABEL"
-
-                      echo "=============================================="
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "RELEASE_LABEL=$RELEASE_LABEL"
 
                       export RELEASE_LABEL
                     outputVariables:
@@ -194,24 +183,12 @@ pipeline:
 
                       RESPONSE_FILE="/tmp/jira-response.json"
 
-                      # ------------------------------------------------
-                      # Search all Epics in the project.
-                      #
-                      # We intentionally perform release matching
-                      # locally in Python so we can also match older
-                      # Epics that do not have the new release label.
-                      # ------------------------------------------------
-
                       JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
 
                       echo "JQL:"
                       echo "$JQL"
 
                       echo "=============================================="
-
-                      # ------------------------------------------------
-                      # Create JSON request body safely using Python.
-                      # ------------------------------------------------
 
                       export SEARCH_JQL="$JQL"
 
@@ -233,10 +210,6 @@ pipeline:
                       print(json.dumps(body))
                       PY
                       )"
-
-                      echo "=============================================="
-                      echo "Sending Jira API request"
-                      echo "=============================================="
 
                       HTTP_CODE="$(curl -sS \
                         -o "$RESPONSE_FILE" \
@@ -262,12 +235,8 @@ pipeline:
 
                       echo ""
 
-                      # ------------------------------------------------
-                      # Do not treat API failures as "no Epic".
-                      # ------------------------------------------------
-
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira API request failed."
+                        echo "ERROR: Jira search failed."
                         exit 1
                       fi
 
@@ -328,29 +297,13 @@ pipeline:
                               f"summary={summary}"
                           )
 
-                          # --------------------------------------------
-                          # Make sure the issue is actually an Epic.
-                          # --------------------------------------------
-
                           if issue_type.lower() != "epic":
                               continue
 
-                          # --------------------------------------------
-                          # Match release name in Epic summary.
-                          #
-                          # Example:
-                          #
-                          # Security scan results - 1.0.0.28 - 5
-                          # vulnerabilities found
-                          #
-                          # Release Name:
-                          # 1.0.0.28
-                          # --------------------------------------------
-
+                          # Match release in summary
                           if release_name and release_name in summary.lower():
 
                               print("MATCH_FOUND_BY_RELEASE_NAME")
-
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
@@ -358,16 +311,12 @@ pipeline:
 
                               raise SystemExit(0)
 
-                          # --------------------------------------------
-                          # Match stable release label.
-                          # --------------------------------------------
-
+                          # Match stable label
                           for label in labels:
 
                               if str(label).lower() == release_label:
 
                                   print("MATCH_FOUND_BY_RELEASE_LABEL")
-
                                   print("EPIC_EXISTS=true")
                                   print(f"EPIC_KEY={key}")
                                   print(f"EPIC_STATUS={status}")
@@ -375,12 +324,7 @@ pipeline:
 
                                   raise SystemExit(0)
 
-                      # -----------------------------------------------
-                      # Nothing matched.
-                      # -----------------------------------------------
-
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
-
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
@@ -435,7 +379,12 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+          condition: |-
+            <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0" && (
+              <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
+              ||
+              <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Closed"
+            )
         spec:
           execution:
             steps:
