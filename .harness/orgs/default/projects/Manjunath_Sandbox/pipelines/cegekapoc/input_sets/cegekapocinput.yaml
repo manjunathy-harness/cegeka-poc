@@ -1,0 +1,18 @@
+inputSet:
+  name: cegeka-poc-input
+  identifier: cegekapocinput
+  orgIdentifier: default
+  projectIdentifier: Manjunath_Sandbox
+  pipeline:
+    identifier: cegekapoc
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: main
+    variables:
+      - name: release_name
+        type: String
+        value: <+input>
