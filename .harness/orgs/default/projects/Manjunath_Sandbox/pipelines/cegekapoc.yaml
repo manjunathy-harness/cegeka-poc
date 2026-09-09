@@ -300,7 +300,6 @@ pipeline:
                           if issue_type.lower() != "epic":
                               continue
 
-                          # Match release in summary
                           if release_name and release_name in summary.lower():
 
                               print("MATCH_FOUND_BY_RELEASE_NAME")
@@ -311,7 +310,6 @@ pipeline:
 
                               raise SystemExit(0)
 
-                          # Match stable label
                           for label in labels:
 
                               if str(label).lower() == release_label:
@@ -383,7 +381,7 @@ pipeline:
             <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0" && (
               <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
               ||
-              <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Closed"
+              <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Done"
             )
         spec:
           execution:
