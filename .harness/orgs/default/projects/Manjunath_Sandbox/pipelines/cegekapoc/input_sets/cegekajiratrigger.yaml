@@ -1,18 +1,21 @@
 inputSet:
   name: cegeka-jira-trigger
-  identifier: cegekajiratrigger
+  identifier: cegeka_jira_trigger
   orgIdentifier: default
   projectIdentifier: Manjunath_Sandbox
+
   pipeline:
     identifier: cegekapoc
+
     properties:
       ci:
         codebase:
           build:
             type: branch
             spec:
-              branch: <+trigger.branch>
+              branch: main
+
     variables:
       - name: release_name
         type: String
-        value: <+input>
+        value: <+trigger.payload.release_name>
