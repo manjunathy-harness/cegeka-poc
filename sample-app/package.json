@@ -1,7 +1,7 @@
 {
   "name": "vuln-demo-app",
   "version": "1.0.0",
-  "description": "Intentionally-vulnerable sample app used ONLY to demo Harness CI/CD + STO (OWASP) + Jira automation. Do not deploy this anywhere real.",
+  "description": "Intentionally-vulnerable sample app used ONLY to demo Harness CI/CD + STO + Jira automation. Do not deploy this anywhere real.",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -9,9 +9,8 @@
     "test": "echo \"(demo app - no real tests)\" && exit 0"
   },
   "dependencies": {
-    "lodash": "4.17.15",
-    "minimist": "0.0.8",
     "axios": "0.18.0",
-    "express": "4.16.0"
+    "lodash": "4.17.15",
+    "minimist": "0.0.8"
   }
 }

@@ -1,27 +1,34 @@
 /**
- * Demo app for the Harness CI/CD + STO(OWASP) + Jira automation walkthrough.
+ * Demo app for Harness CI/CD + STO + Jira automation.
  *
- * This app intentionally does nothing interesting - its only job is to
- * declare a handful of old, known-vulnerable npm packages in package.json
- * so that a security scan (npm audit / OWASP Dependency-Check) reliably
- * finds real CVEs to demo the Jira ticket automation against.
+ * This app intentionally declares old, known-vulnerable npm packages
+ * for security scanning demonstrations.
  *
- * DO NOT deploy this anywhere real or use these dependency versions in
- * an actual project.
+ * DO NOT deploy this anywhere real.
  */
+
+const http = require('http');
 const _ = require('lodash');
-const express = require('express');
+const axios = require('axios');
+const minimist = require('minimist');
 
-const app = express();
+const args = minimist(process.argv.slice(2));
 
-app.get('/', (req, res) => {
-  res.json({
+const server = http.createServer((req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'application/json'
+  });
+
+  res.end(JSON.stringify({
     message: 'Harness CI/CD + STO + Jira automation demo app',
     randomId: _.random(1000, 9999),
-  });
+    environment: args.env || 'demo',
+    axiosVersion: axios.VERSION
+  }));
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+
+server.listen(port, () => {
   console.log(`Demo app listening on port ${port}`);
 });
