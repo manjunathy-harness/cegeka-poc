@@ -107,11 +107,21 @@ pipeline:
                         $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
 
+                      echo "=============================================="
+                      echo "Contents of vuln_vars.env"
+                      echo "=============================================="
+
                       cat /harness/vuln_vars.env
+
+                      echo "=============================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "VULN_COUNT=$VULN_COUNT"
+                      echo "VULN_ITEMS=$VULN_ITEMS"
                     outputVariables:
                       - name: RELEASE_NAME
                       - name: VULN_COUNT
@@ -135,6 +145,7 @@ pipeline:
 
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
+                      echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "RELEASE_LABEL=$RELEASE_LABEL"
 
                       export RELEASE_LABEL
@@ -153,15 +164,31 @@ pipeline:
                       JIRA_URL: https://manjunath0328.atlassian.net
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
+                      RELEASE_NAME: <+pipeline.variables.release_name>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
                       set -e
 
+                      echo "=============================================="
+                      echo "JIRA EPIC LOOKUP"
+                      echo "=============================================="
+
+                      echo "PROJECT      : $JIRA_PROJECT_KEY"
+                      echo "RELEASE NAME : $RELEASE_NAME"
+                      echo "RELEASE LABEL: $RELEASE_LABEL"
+
+                      echo "=============================================="
+
                       RESPONSE_FILE="/tmp/jira-response.json"
 
-                      # Search Jira directly using the unique release label.
-                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" ORDER BY created DESC"
+                      #
+                      # Search all Epics in the project.
+                      #
+                      # We intentionally search all Epics and perform the
+                      # release matching in Python.
+                      #
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
 
                       export SEARCH_JQL="$JQL"
 
@@ -184,6 +211,14 @@ pipeline:
                       PY
                       )"
 
+                      echo "JQL:"
+                      echo "$JQL"
+
+                      echo "=============================================="
+
+                      #
+                      # Call Jira Search API
+                      #
                       HTTP_CODE="$(curl -sS \
                         -o "$RESPONSE_FILE" \
                         -w "%{http_code}" \
@@ -194,76 +229,317 @@ pipeline:
                         "${JIRA_URL}/rest/api/3/search/jql" \
                         --data "$REQUEST_BODY")"
 
+                      echo "JIRA HTTP STATUS: $HTTP_CODE"
+
+                      echo "=============================================="
+
+                      #
+                      # Fail if Jira API request failed.
+                      #
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed with HTTP status $HTTP_CODE"
+                        echo "ERROR: Jira search failed."
+                        echo "HTTP STATUS: $HTTP_CODE"
+                        echo "RESPONSE:"
                         cat "$RESPONSE_FILE"
                         exit 1
                       fi
 
+                      #
+                      # Pass response information to Python.
+                      #
                       export RESPONSE_FILE
+                      export RELEASE_NAME
+                      export RELEASE_LABEL
 
                       MATCH_RESULT="$(python3 - <<'PY'
                       import json
                       import os
+                      import sys
 
                       response_file = os.environ["RESPONSE_FILE"]
 
-                      with open(response_file, "r", encoding="utf-8") as f:
-                          data = json.load(f)
+                      release_name = (
+                          os.environ.get("RELEASE_NAME", "")
+                          .strip()
+                          .lower()
+                      )
+
+                      release_label = (
+                          os.environ.get("RELEASE_LABEL", "")
+                          .strip()
+                          .lower()
+                      )
+
+                      #
+                      # Read Jira response.
+                      #
+                      try:
+                          with open(
+                              response_file,
+                              "r",
+                              encoding="utf-8"
+                          ) as f:
+                              data = json.load(f)
+
+                      except Exception as exc:
+                          print(
+                              f"ERROR: Unable to parse Jira response: {exc}"
+                          )
+                          sys.exit(1)
+
+                      #
+                      # If Jira returned an error object,
+                      # do not treat it as "no Epic".
+                      #
+                      if "errorMessages" in data:
+                          print("ERROR: Jira returned an error response.")
+                          print(json.dumps(data))
+                          sys.exit(1)
+
+                      #
+                      # Verify that the issues field exists.
+                      #
+                      if "issues" not in data:
+                          print(
+                              "ERROR: Jira response does not contain "
+                              "'issues'."
+                          )
+                          print(json.dumps(data))
+                          sys.exit(1)
 
                       issues = data.get("issues", [])
 
+                      print(
+                          f"TOTAL_EPICS_RETURNED={len(issues)}"
+                      )
+
+                      #
+                      # No Epics exist in the project.
+                      #
                       if not issues:
+
+                          print(
+                              "NO_EPICS_RETURNED_FROM_JIRA"
+                          )
+
                           print("EPIC_EXISTS=false")
                           print("EPIC_KEY=")
                           print("EPIC_STATUS=")
-                          raise SystemExit(0)
 
+                          sys.exit(0)
+
+                      #
+                      # Inspect every returned Epic.
+                      #
                       for issue in issues:
 
                           key = issue.get("key", "")
 
-                          fields = issue.get("fields", {})
+                          fields = issue.get(
+                              "fields",
+                              {}
+                          ) or {}
+
+                          summary = fields.get(
+                              "summary",
+                              ""
+                          ) or ""
 
                           status = (
-                              fields.get("status", {}) or {}
-                          ).get("name", "")
+                              fields.get(
+                                  "status",
+                                  {}
+                              ) or {}
+                          ).get(
+                              "name",
+                              ""
+                          ) or ""
 
                           issue_type = (
-                              fields.get("issuetype", {}) or {}
-                          ).get("name", "")
+                              fields.get(
+                                  "issuetype",
+                                  {}
+                              ) or {}
+                          ).get(
+                              "name",
+                              ""
+                          ) or ""
 
+                          labels = fields.get(
+                              "labels",
+                              []
+                          ) or []
+
+                          #
+                          # Only process actual Epics.
+                          #
                           if issue_type.lower() != "epic":
                               continue
 
-                          print("EPIC_EXISTS=true")
-                          print(f"EPIC_KEY={key}")
-                          print(f"EPIC_STATUS={status}")
+                          summary_lower = (
+                              summary
+                              .strip()
+                              .lower()
+                          )
 
-                          raise SystemExit(0)
+                          #
+                          # Match by release name in summary.
+                          #
+                          summary_match = (
+                              release_name != ""
+                              and release_name in summary_lower
+                          )
+
+                          #
+                          # Match by exact release label.
+                          #
+                          label_match = False
+
+                          if release_label:
+
+                              for label in labels:
+
+                                  if (
+                                      str(label)
+                                      .strip()
+                                      .lower()
+                                      == release_label
+                                  ):
+                                      label_match = True
+                                      break
+
+                          #
+                          # Debug information for each Epic.
+                          #
+                          print(
+                              "EPIC_CHECK "
+                              f"key={key} "
+                              f"status={status} "
+                              f"summary={summary} "
+                              f"labels={labels} "
+                              f"summary_match={summary_match} "
+                              f"label_match={label_match}"
+                          )
+
+                          #
+                          # If either matching method succeeds,
+                          # this is our release Epic.
+                          #
+                          if summary_match or label_match:
+
+                              if summary_match:
+                                  print(
+                                      "MATCH_FOUND_BY_RELEASE_NAME"
+                                  )
+
+                              if label_match:
+                                  print(
+                                      "MATCH_FOUND_BY_RELEASE_LABEL"
+                                  )
+
+                              print("EPIC_EXISTS=true")
+                              print(
+                                  f"EPIC_KEY={key}"
+                              )
+                              print(
+                                  f"EPIC_STATUS={status}"
+                              )
+
+                              sys.exit(0)
+
+                      #
+                      # Jira returned Epics, but none belong
+                      # to this release.
+                      #
+                      print(
+                          "NO_MATCHING_RELEASE_EPIC_FOUND"
+                      )
 
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
+
+                      sys.exit(0)
+
                       PY
                       )"
 
+                      echo "=============================================="
+                      echo "MATCH RESULT"
+                      echo "=============================================="
+
+                      echo "$MATCH_RESULT"
+
+                      echo "=============================================="
+
+                      #
+                      # Extract EPIC_EXISTS.
+                      #
                       EPIC_EXISTS="$(echo "$MATCH_RESULT" \
                         | grep '^EPIC_EXISTS=' \
                         | cut -d= -f2- || true)"
 
+                      #
+                      # Extract EPIC_KEY.
+                      #
                       EPIC_KEY="$(echo "$MATCH_RESULT" \
                         | grep '^EPIC_KEY=' \
                         | cut -d= -f2- || true)"
 
+                      #
+                      # Extract EPIC_STATUS.
+                      #
                       EPIC_STATUS="$(echo "$MATCH_RESULT" \
                         | grep '^EPIC_STATUS=' \
                         | cut -d= -f2- || true)"
 
+                      #
+                      # IMPORTANT:
+                      #
+                      # Do NOT default a missing EPIC_EXISTS to false.
+                      #
+                      # Missing value means the lookup itself failed.
+                      #
                       if [ -z "$EPIC_EXISTS" ]; then
-                        EPIC_EXISTS="false"
+
+                        echo "ERROR: Jira lookup did not return EPIC_EXISTS."
+
+                        echo "The pipeline will stop instead of creating"
+                        echo "a possible duplicate Epic."
+
+                        exit 1
+
                       fi
 
+                      #
+                      # Validate EPIC_EXISTS.
+                      #
+                      if [ "$EPIC_EXISTS" != "true" ] && \
+                         [ "$EPIC_EXISTS" != "false" ]; then
+
+                        echo "ERROR: Invalid EPIC_EXISTS value:"
+                        echo "$EPIC_EXISTS"
+
+                        exit 1
+
+                      fi
+
+                      #
+                      # Final lookup result.
+                      #
+                      echo "=============================================="
+                      echo "FINAL JIRA LOOKUP RESULT"
+                      echo "=============================================="
+
+                      echo "EPIC_EXISTS=$EPIC_EXISTS"
+                      echo "EPIC_KEY=$EPIC_KEY"
+                      echo "EPIC_STATUS=$EPIC_STATUS"
+
+                      echo "=============================================="
+
+                      #
+                      # Export values for Harness.
+                      #
                       export EPIC_EXISTS
                       export EPIC_KEY
                       export EPIC_STATUS
@@ -313,8 +589,8 @@ pipeline:
                   timeout: 5m
               - step:
                   type: JiraCreate
-                  name: Create_Child_Tickets_New_Epic
-                  identifier: Create_Child_Tickets_New_Epic
+                  name: Create_Child_Vulnerability_Ticket
+                  identifier: Create_Child_Vulnerability_Ticket
                   when:
                     stageStatus: Success
                     condition: |-
@@ -341,47 +617,6 @@ pipeline:
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
-                  timeout: 5m
-                  failureStrategies:
-                    - onFailure:
-                        errors:
-                          - AllErrors
-                        action:
-                          type: MarkAsSuccess
-                  strategy:
-                    repeat:
-                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
-              - step:
-                  type: JiraCreate
-                  name: Create_Child_Tickets_Existing_Epic
-                  identifier: Create_Child_Tickets_Existing_Epic
-                  when:
-                    stageStatus: Success
-                    condition: |-
-                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "true" &&
-                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_child_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
-                      - name: Description
-                        value: |-
-                          Advisory / CVE: <+repeat.item.split("~")[0]>
-                          Severity: <+repeat.item.split("~")[1]>
-                          Package: <+repeat.item.split("~")[2]>
-                          Vulnerable range: <+repeat.item.split("~")[3]>
-                          CVSS score: <+repeat.item.split("~")[4]>
-                          Details: <+repeat.item.split("~")[5]>
-
-                          Release: <+pipeline.variables.release_name>
-                      - name: Parent
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
                   timeout: 5m
                   failureStrategies:
                     - onFailure:
