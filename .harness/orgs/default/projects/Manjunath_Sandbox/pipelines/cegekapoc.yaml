@@ -56,11 +56,14 @@ pipeline:
 
                       cd sample-app
 
-                      echo "Installing dependencies..."
+                      echo "=============================================="
+                      echo "INSTALLING DEPENDENCIES"
+                      echo "=============================================="
+
                       npm install --package-lock-only
 
                       echo ""
-                      echo "Package versions:"
+                      echo "Installed packages:"
                       npm list --depth=0 || true
               - step:
                   type: Owasp
@@ -89,15 +92,18 @@ pipeline:
 
                       cd sample-app
 
-                      echo "Running npm audit..."
+                      echo "=============================================="
+                      echo "RUNNING NPM AUDIT"
+                      echo "=============================================="
 
                       npm audit --json > /harness/npm-audit.json || true
 
                       echo ""
-                      echo "================ NPM AUDIT OUTPUT ================"
+                      echo "=============================================="
+                      echo "NPM AUDIT RESULT"
+                      echo "=============================================="
+
                       cat /harness/npm-audit.json
-                      echo ""
-                      echo "===================================================="
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
@@ -110,17 +116,18 @@ pipeline:
                     command: |-
                       set -e
 
-                      echo "Release: $RELEASE_NAME"
-                      echo "Minimum severity: $MIN_SEVERITY"
+                      echo "=============================================="
+                      echo "PARSING VULNERABILITIES"
+                      echo "=============================================="
+
+                      echo "Release      : $RELEASE_NAME"
+                      echo "Min severity : $MIN_SEVERITY"
 
                       SEVERITY_FLAG=""
 
                       if [ -n "$MIN_SEVERITY" ]; then
                         SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
                       fi
-
-                      echo ""
-                      echo "Running vulnerability parser..."
 
                       python3 scripts/parse_npm_audit.py \
                         /harness/npm-audit.json \
@@ -129,9 +136,11 @@ pipeline:
                         > /harness/vuln_vars.env
 
                       echo ""
-                      echo "================ PARSED VARIABLES ================"
+                      echo "=============================================="
+                      echo "PARSED VARIABLES"
+                      echo "=============================================="
+
                       cat /harness/vuln_vars.env
-                      echo "===================================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
@@ -156,6 +165,10 @@ pipeline:
                     command: |-
                       set -e
 
+                      echo "=============================================="
+                      echo "GENERATING RELEASE LABEL"
+                      echo "=============================================="
+
                       SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
                         | tr '[:upper:]' '[:lower:]' \
                         | sed 's/[^a-z0-9]/-/g' \
@@ -164,8 +177,8 @@ pipeline:
 
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
-                      echo "Release name : $RELEASE_NAME"
-                      echo "Release label: $RELEASE_LABEL"
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "RELEASE_LABEL=$RELEASE_LABEL"
 
                       export RELEASE_LABEL
                     outputVariables:
@@ -180,7 +193,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      JIRA_URL: https://manjunath0328.atlassian.net
+                      JIRA_URL: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
                       RELEASE_NAME: <+pipeline.variables.release_name>
@@ -194,60 +207,58 @@ pipeline:
                       echo "===================================================="
 
                       echo ""
-                      echo "Jira URL:"
+                      echo "Jira API URL:"
                       echo "$JIRA_URL"
 
                       echo ""
                       echo "Jira email configured:"
                       echo "$JIRA_EMAIL"
 
-                      # ------------------------------------------------
-                      # 1. Identify authenticated Jira account
-                      # ------------------------------------------------
+                      # ==================================================
+                      # 1. TEST JIRA AUTHENTICATION
+                      # ==================================================
 
                       echo ""
                       echo "----------------------------------------------------"
                       echo "1. Calling Jira /myself"
                       echo "----------------------------------------------------"
 
-                      MYSELF_RESPONSE="$(curl -sS \
+                      MYSELF_HTTP_STATUS="$(curl -sS \
+                        -o /tmp/jira-myself.json \
+                        -w "%{http_code}" \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
                         -H "Accept: application/json" \
                         "${JIRA_URL}/rest/api/3/myself")"
 
-                      echo "$MYSELF_RESPONSE"
-
-                      MYSELF_ACCOUNT_ID="$(echo "$MYSELF_RESPONSE" \
-                        | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("accountId",""))' 2>/dev/null || true)"
-
-                      MYSELF_DISPLAY_NAME="$(echo "$MYSELF_RESPONSE" \
-                        | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("displayName",""))' 2>/dev/null || true)"
-
-                      MYSELF_EMAIL="$(echo "$MYSELF_RESPONSE" \
-                        | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("emailAddress",""))' 2>/dev/null || true)"
+                      echo ""
+                      echo "Jira /myself HTTP status:"
+                      echo "$MYSELF_HTTP_STATUS"
 
                       echo ""
-                      echo "Authenticated Jira account ID:"
-                      echo "$MYSELF_ACCOUNT_ID"
+                      echo "Jira /myself response:"
+                      cat /tmp/jira-myself.json
 
-                      echo ""
-                      echo "Authenticated Jira display name:"
-                      echo "$MYSELF_DISPLAY_NAME"
-
-                      echo ""
-                      echo "Authenticated Jira email:"
-                      echo "$MYSELF_EMAIL"
-
-                      if [ -z "$MYSELF_ACCOUNT_ID" ]; then
+                      if [ "$MYSELF_HTTP_STATUS" != "200" ]; then
                         echo ""
-                        echo "ERROR: Could not determine authenticated Jira account."
-                        echo "Check JIRA_EMAIL and JIRA_API_TOKEN."
+                        echo "===================================================="
+                        echo "JIRA AUTHENTICATION FAILED"
+                        echo "===================================================="
+
+                        echo ""
+                        echo "The Jira API rejected the credentials."
+
+                        echo ""
+                        echo "Pipeline will stop to prevent duplicate Jira creation."
+
                         exit 1
                       fi
 
-                      # ------------------------------------------------
-                      # 2. Directly test known existing Epic
-                      # ------------------------------------------------
+                      echo ""
+                      echo "JIRA AUTHENTICATION SUCCESSFUL"
+
+                      # ==================================================
+                      # 2. TEST KNOWN EXISTING EPIC
+                      # ==================================================
 
                       echo ""
                       echo "===================================================="
@@ -257,11 +268,11 @@ pipeline:
                       TEST_EPIC_KEY="SCRUM-1253"
 
                       echo ""
-                      echo "Testing existing Jira issue:"
+                      echo "Testing Jira issue:"
                       echo "$TEST_EPIC_KEY"
 
                       TEST_HTTP_STATUS="$(curl -sS \
-                        -o /tmp/scrum-1253.json \
+                        -o /tmp/test-epic.json \
                         -w "%{http_code}" \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
                         -H "Accept: application/json" \
@@ -273,41 +284,30 @@ pipeline:
 
                       echo ""
                       echo "Jira response:"
-                      cat /tmp/scrum-1253.json
-
-                      # ------------------------------------------------
-                      # Do NOT continue if API user cannot see issue
-                      # ------------------------------------------------
+                      cat /tmp/test-epic.json
 
                       if [ "$TEST_HTTP_STATUS" != "200" ]; then
                         echo ""
                         echo "===================================================="
-                        echo "JIRA VISIBILITY TEST FAILED"
+                        echo "JIRA ISSUE VISIBILITY TEST FAILED"
                         echo "===================================================="
 
                         echo ""
-                        echo "The authenticated Jira user cannot retrieve $TEST_EPIC_KEY."
+                        echo "Authentication succeeded."
+                        echo "However, the API user cannot read $TEST_EPIC_KEY."
 
                         echo ""
-                        echo "Possible causes:"
-                        echo "1. Harness JIRA_EMAIL is not the Jira account you expect."
-                        echo "2. The API token belongs to a different Jira account."
-                        echo "3. The authenticated user does not have Browse Projects permission."
-                        echo "4. Issue-level security prevents the issue from being viewed."
-                        echo "5. Jira project permissions are restricting API visibility."
-
-                        echo ""
-                        echo "Pipeline will STOP here to prevent duplicate Jira Epics."
+                        echo "Pipeline will stop to prevent duplicate Jira creation."
 
                         exit 1
                       fi
 
                       echo ""
-                      echo "SUCCESS: API user can read $TEST_EPIC_KEY."
+                      echo "SUCCESS: $TEST_EPIC_KEY is accessible."
 
-                      # ------------------------------------------------
-                      # 3. Normal release lookup
-                      # ------------------------------------------------
+                      # ==================================================
+                      # 3. SEARCH EXISTING EPICS
+                      # ==================================================
 
                       echo ""
                       echo "===================================================="
@@ -315,9 +315,16 @@ pipeline:
                       echo "===================================================="
 
                       echo ""
-                      echo "Release name : $RELEASE_NAME"
-                      echo "Release label: $RELEASE_LABEL"
-                      echo "Project      : $JIRA_PROJECT_KEY"
+                      echo "Release name:"
+                      echo "$RELEASE_NAME"
+
+                      echo ""
+                      echo "Release label:"
+                      echo "$RELEASE_LABEL"
+
+                      echo ""
+                      echo "Jira project:"
+                      echo "$JIRA_PROJECT_KEY"
 
                       JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
 
@@ -325,14 +332,14 @@ pipeline:
                       echo "JQL:"
                       echo "$JQL"
 
-                      REQUEST_BODY="$(python3 - "$JQL" <<'PY'
-                      import json
-                      import sys
+                      export SEARCH_JQL="$JQL"
 
-                      jql = sys.argv[1]
+                      REQUEST_BODY="$(python3 - <<'PY'
+                      import json
+                      import os
 
                       body = {
-                          "jql": jql,
+                          "jql": os.environ["SEARCH_JQL"],
                           "maxResults": 100,
                           "fields": [
                               "summary",
@@ -349,46 +356,44 @@ pipeline:
                       echo ""
                       echo "Sending Jira search request..."
 
-                      HTTP_STATUS="$(curl -sS \
+                      HTTP_CODE="$(curl -sS \
                         -o /tmp/jira-search-response.json \
                         -w "%{http_code}" \
-                        -X POST \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                        -X POST \
                         -H "Accept: application/json" \
                         -H "Content-Type: application/json" \
                         "${JIRA_URL}/rest/api/3/search/jql" \
                         --data "$REQUEST_BODY")"
 
                       echo ""
-                      echo "JIRA HTTP STATUS:"
-                      echo "$HTTP_STATUS"
+                      echo "JIRA SEARCH HTTP STATUS:"
+                      echo "$HTTP_CODE"
 
                       echo ""
-                      echo "JIRA RESPONSE:"
+                      echo "JIRA SEARCH RESPONSE:"
                       cat /tmp/jira-search-response.json
 
-                      if [ "$HTTP_STATUS" != "200" ]; then
+                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
                         echo ""
-                        echo "ERROR: Jira search API returned HTTP $HTTP_STATUS."
-                        echo "Pipeline will stop to prevent duplicate Epic creation."
+                        echo "ERROR: Jira search failed."
+                        echo "Pipeline will stop to prevent duplicate Jira creation."
                         exit 1
                       fi
 
-                      # ------------------------------------------------
-                      # 4. Match release by summary OR stable label
-                      # ------------------------------------------------
+                      # ==================================================
+                      # 4. FIND RELEASE EPIC
+                      # ==================================================
 
-                      python3 - \
-                        /tmp/jira-search-response.json \
-                        "$RELEASE_NAME" \
-                        "$RELEASE_LABEL" \
-                        > /harness/jira_lookup.env <<'PY'
+                      export RESPONSE_FILE="/tmp/jira-search-response.json"
+
+                      MATCH_RESULT="$(python3 - <<'PY'
                       import json
-                      import sys
+                      import os
 
-                      response_file = sys.argv[1]
-                      release_name = sys.argv[2]
-                      release_label = sys.argv[3]
+                      response_file = os.environ["RESPONSE_FILE"]
+                      release_name = os.environ.get("RELEASE_NAME", "").strip().lower()
+                      release_label = os.environ.get("RELEASE_LABEL", "").strip().lower()
 
                       with open(response_file, "r", encoding="utf-8") as f:
                           data = json.load(f)
@@ -397,102 +402,125 @@ pipeline:
 
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
-                      matched = None
-
                       for issue in issues:
-                          fields = issue.get("fields", {})
 
                           key = issue.get("key", "")
 
+                          fields = issue.get("fields", {})
+
                           summary = fields.get("summary", "") or ""
+
+                          status = (
+                              fields.get("status", {}) or {}
+                          ).get("name", "")
+
+                          issue_type = (
+                              fields.get("issuetype", {}) or {}
+                          ).get("name", "")
 
                           labels = fields.get("labels", []) or []
 
-                          status_obj = fields.get("status") or {}
-
-                          status_name = status_obj.get("name", "") or ""
-
-                          issue_type_obj = fields.get("issuetype") or {}
-
-                          issue_type = issue_type_obj.get("name", "") or ""
-
                           print(
-                              f"EPIC_CANDIDATE "
+                              f"EPIC_CHECK "
                               f"key={key} "
+                              f"type={issue_type} "
+                              f"status={status} "
                               f"summary={summary} "
-                              f"status={status_name} "
-                              f"labels={labels} "
-                              f"issuetype={issue_type}"
+                              f"labels={labels}"
                           )
 
                           if issue_type.lower() != "epic":
                               continue
 
-                          summary_match = release_name in summary
+                          summary_match = (
+                              release_name != ""
+                              and release_name in summary.lower()
+                          )
 
-                          label_match = release_label in labels
+                          label_match = any(
+                              str(label).lower() == release_label
+                              for label in labels
+                          )
 
                           if summary_match or label_match:
-                              matched = {
-                                  "key": key,
-                                  "summary": summary,
-                                  "status": status_name,
-                                  "labels": labels
-                              }
-                              break
 
-                      if matched:
-                          print("")
-                          print("MATCHED_EXISTING_EPIC=true")
-                          print(f"EPIC_EXISTS=true")
-                          print(f"EPIC_KEY={matched['key']}")
-                          print(f"EPIC_STATUS={matched['status']}")
-                          print(f"EPIC_SUMMARY={matched['summary']}")
+                              print("MATCH_FOUND=true")
+                              print("EPIC_EXISTS=true")
+                              print(f"EPIC_KEY={key}")
+                              print(f"EPIC_STATUS={status}")
+                              print(f"EPIC_SUMMARY={summary}")
 
-                      else:
-                          print("")
-                          print("NO_MATCHING_RELEASE_EPIC_FOUND")
-                          print("EPIC_EXISTS=false")
-                          print("EPIC_KEY=")
-                          print("EPIC_STATUS=")
-                          print("EPIC_SUMMARY=")
+                              raise SystemExit(0)
+
+                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
+                      print("EPIC_EXISTS=false")
+                      print("EPIC_KEY=")
+                      print("EPIC_STATUS=")
+                      print("EPIC_SUMMARY=")
                       PY
+                      )"
 
                       echo ""
                       echo "===================================================="
-                      echo "JIRA LOOKUP RESULT"
+                      echo "JIRA MATCH RESULT"
                       echo "===================================================="
 
-                      cat /harness/jira_lookup.env
+                      echo "$MATCH_RESULT"
 
-                      # ------------------------------------------------
-                      # 5. Export Harness output variables
-                      # ------------------------------------------------
+                      # ==================================================
+                      # 5. EXPORT RESULTS
+                      # ==================================================
 
-                      export EPIC_EXISTS="$(grep '^EPIC_EXISTS=' /harness/jira_lookup.env | cut -d= -f2-)"
-                      export EPIC_KEY="$(grep '^EPIC_KEY=' /harness/jira_lookup.env | cut -d= -f2-)"
-                      export EPIC_STATUS="$(grep '^EPIC_STATUS=' /harness/jira_lookup.env | cut -d= -f2-)"
+                      EPIC_EXISTS="$(echo "$MATCH_RESULT" \
+                        | grep '^EPIC_EXISTS=' \
+                        | cut -d= -f2- || true)"
+
+                      EPIC_KEY="$(echo "$MATCH_RESULT" \
+                        | grep '^EPIC_KEY=' \
+                        | cut -d= -f2- || true)"
+
+                      EPIC_STATUS="$(echo "$MATCH_RESULT" \
+                        | grep '^EPIC_STATUS=' \
+                        | cut -d= -f2- || true)"
+
+                      EPIC_SUMMARY="$(echo "$MATCH_RESULT" \
+                        | grep '^EPIC_SUMMARY=' \
+                        | cut -d= -f2- || true)"
+
+                      # ==================================================
+                      # SAFETY CHECK
+                      # ==================================================
+
+                      if [ -z "$EPIC_EXISTS" ]; then
+
+                        echo ""
+                        echo "===================================================="
+                        echo "SAFETY CHECK FAILED"
+                        echo "===================================================="
+
+                        echo ""
+                        echo "EPIC_EXISTS was not populated."
+
+                        echo ""
+                        echo "Stopping pipeline to prevent duplicate Jira creation."
+
+                        exit 1
+                      fi
 
                       echo ""
                       echo "===================================================="
-                      echo "FINAL JIRA DECISION"
+                      echo "FINAL JIRA LOOKUP RESULT"
                       echo "===================================================="
 
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
                       echo "EPIC_STATUS=$EPIC_STATUS"
+                      echo "EPIC_SUMMARY=$EPIC_SUMMARY"
 
-                      # ------------------------------------------------
-                      # Safety check
-                      # Never silently treat a malformed lookup as false
-                      # ------------------------------------------------
-
-                      if [ -z "$EPIC_EXISTS" ]; then
-                        echo ""
-                        echo "ERROR: EPIC_EXISTS was not populated."
-                        echo "Stopping pipeline to prevent duplicate Jira creation."
-                        exit 1
-                      fi
+                      export EPIC_EXISTS
+                      export EPIC_KEY
+                      export EPIC_STATUS
+                      export EPIC_SUMMARY
                     outputVariables:
                       - name: EPIC_EXISTS
                       - name: EPIC_KEY
@@ -533,10 +561,10 @@ pipeline:
                           Total vulnerabilities found:
                           <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
-                          Each vulnerability has been filed as a linked child ticket below.
-
                           Release label:
                           <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
+
+                          Each vulnerability has been filed as a child ticket below.
 
                           Pipeline execution:
                           <+pipeline.executionUrl>
@@ -591,7 +619,7 @@ pipeline:
                           <+pipeline.executionUrl>
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
-                    timeout: 5m
+                  timeout: 5m
                   failureStrategies:
                     - onFailure:
                         errors:
@@ -650,7 +678,7 @@ pipeline:
                           <+pipeline.executionUrl>
                       - name: Parent
                         value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
-                    timeout: 5m
+                  timeout: 5m
                   failureStrategies:
                     - onFailure:
                         errors:
