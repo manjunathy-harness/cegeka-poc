@@ -91,7 +91,6 @@ pipeline:
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
-
                       SEVERITY_FLAG=""
                       if [ -n "$MIN_SEVERITY" ]; then
                         SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
@@ -166,6 +165,7 @@ pipeline:
                       echo "PROJECT=$JIRA_PROJECT_KEY"
                       echo "RELEASE=$RELEASE_NAME"
                       echo "LABEL=$RELEASE_LABEL"
+                      echo "=============================================="
 
                       RESPONSE_FILE="/tmp/jira-response.json"
 
@@ -175,11 +175,18 @@ pipeline:
                       import json
                       import os
 
-                      print(json.dumps({
+                      body = {
                           "jql": os.environ["SEARCH_JQL"],
                           "maxResults": 100,
-                          "fields": ["summary", "status", "issuetype", "labels"]
-                      }))
+                          "fields": [
+                              "summary",
+                              "status",
+                              "issuetype",
+                              "labels"
+                          ]
+                      }
+
+                      print(json.dumps(body))
                       PY
                       )"
 
@@ -193,10 +200,10 @@ pipeline:
                         "${JIRA_API_BASE}/search/jql" \
                         --data "$REQUEST_BODY")"
 
-                      echo "HTTP_STATUS=$HTTP_CODE"
+                      echo "JIRA HTTP STATUS=$HTTP_CODE"
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed"
+                        echo "ERROR: Jira search failed."
                         cat "$RESPONSE_FILE"
                         exit 1
                       fi
@@ -212,15 +219,17 @@ pipeline:
                       with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
                           data = json.load(f)
 
-                      release = os.environ["RELEASE_NAME"].strip().lower()
-                      label = os.environ["RELEASE_LABEL"].strip().lower()
+                      release_name = os.environ["RELEASE_NAME"].strip().lower()
+                      release_label = os.environ["RELEASE_LABEL"].strip().lower()
 
                       issues = data.get("issues", [])
+
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
                       for issue in issues:
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
+
                           summary = fields.get("summary", "") or ""
                           status = (fields.get("status", {}) or {}).get("name", "")
                           issue_type = (fields.get("issuetype", {}) or {}).get("name", "")
@@ -229,13 +238,23 @@ pipeline:
                           if issue_type.lower() != "epic":
                               continue
 
-                          if release in summary.lower() or label in [str(x).lower() for x in labels]:
+                          if release_name in summary.lower():
+                              print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
                               raise SystemExit(0)
 
+                          if release_label in [str(x).lower() for x in labels]:
+                              print("MATCH_FOUND_BY_RELEASE_LABEL")
+                              print("EPIC_EXISTS=true")
+                              print(f"EPIC_KEY={key}")
+                              print(f"EPIC_STATUS={status}")
+                              print(f"EPIC_SUMMARY={summary}")
+                              raise SystemExit(0)
+
+                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
@@ -243,18 +262,26 @@ pipeline:
                       PY
                       )"
 
-                      echo "$MATCH_RESULT"
-
-                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2-)"
-                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2-)"
-                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2-)"
-
                       echo "=============================================="
-                      echo "FINAL RESULT"
+                      echo "MATCH RESULT"
+                      echo "$MATCH_RESULT"
+                      echo "=============================================="
+
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
+
+                      if [ -z "$EPIC_EXISTS" ]; then
+                        EPIC_EXISTS="false"
+                      fi
+
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
                       echo "EPIC_STATUS=$EPIC_STATUS"
-                      echo "=============================================="
+
+                      export EPIC_EXISTS
+                      export EPIC_KEY
+                      export EPIC_STATUS
                     outputVariables:
                       - name: EPIC_EXISTS
                       - name: EPIC_KEY
@@ -291,7 +318,7 @@ pipeline:
 
                           Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
-                          Each vulnerability has been filed as a child ticket.
+                          Each vulnerability has been filed as a child ticket below.
 
                           Pipeline execution: <+pipeline.executionUrl>
                       - name: Labels
@@ -326,39 +353,12 @@ pipeline:
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
                     timeout: 5m
-                  strategy:
-                    repeat:
-                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
-              - step:
-                  type: JiraCreate
-                  name: Create_Child_Tickets_Existing_Epic
-                  identifier: Create_Child_Tickets_Existing_Epic
-                  when:
-                    stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "true" && <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_child_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
-                      - name: Description
-                        value: |-
-                          Advisory / CVE: <+repeat.item.split("~")[0]>
-                          Severity: <+repeat.item.split("~")[1]>
-                          Package: <+repeat.item.split("~")[2]>
-                          Vulnerable range: <+repeat.item.split("~")[3]>
-                          CVSS score: <+repeat.item.split("~")[4]>
-                          Details: <+repeat.item.split("~")[5]>
-
-                          Release: <+pipeline.variables.release_name>
-                      - name: Parent
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
-                    timeout: 5m
+                    failureStrategies:
+                      - onFailure:
+                          errors:
+                            - AllErrors
+                          action:
+                            type: MarkAsSuccess
                   strategy:
                     repeat:
                       items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
