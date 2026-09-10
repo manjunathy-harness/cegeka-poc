@@ -377,12 +377,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: |-
-            <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0" && (
-              <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
-              ||
-              <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Done"
-            )
+          condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
         spec:
           execution:
             steps:
@@ -392,7 +387,9 @@ pipeline:
                   identifier: Create_Parent_Release_Ticket
                   when:
                     stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
+                    condition: |-
+                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" ||
+                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
                   spec:
                     connectorRef: cegekapocjira
                     projectKey: <+pipeline.variables.jira_project_key>
@@ -420,7 +417,9 @@ pipeline:
                   identifier: Create_Child_Vulnerability_Ticket
                   when:
                     stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false"
+                    condition: |-
+                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" ||
+                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
                   spec:
                     connectorRef: cegekapocjira
                     projectKey: <+pipeline.variables.jira_project_key>
