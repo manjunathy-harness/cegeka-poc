@@ -53,6 +53,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -79,7 +80,6 @@ pipeline:
                     command: |-
                       cd sample-app
 
-                      # Continue the pipeline even when npm audit finds vulnerabilities.
                       npm audit --json > /harness/npm-audit.json || true
 
                       cat /harness/npm-audit.json
@@ -135,7 +135,6 @@ pipeline:
 
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
-                      echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "RELEASE_LABEL=$RELEASE_LABEL"
 
                       export RELEASE_LABEL
@@ -154,7 +153,6 @@ pipeline:
                       JIRA_URL: https://manjunath0328.atlassian.net
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.variables.release_name>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
@@ -162,7 +160,8 @@ pipeline:
 
                       RESPONSE_FILE="/tmp/jira-response.json"
 
-                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
+                      # Search Jira directly using the unique release label.
+                      JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" ORDER BY created DESC"
 
                       export SEARCH_JQL="$JQL"
 
@@ -202,16 +201,12 @@ pipeline:
                       fi
 
                       export RESPONSE_FILE
-                      export RELEASE_NAME
-                      export RELEASE_LABEL
 
                       MATCH_RESULT="$(python3 - <<'PY'
                       import json
                       import os
 
                       response_file = os.environ["RESPONSE_FILE"]
-                      release_name = os.environ.get("RELEASE_NAME", "").strip().lower()
-                      release_label = os.environ.get("RELEASE_LABEL", "").strip().lower()
 
                       with open(response_file, "r", encoding="utf-8") as f:
                           data = json.load(f)
@@ -225,11 +220,10 @@ pipeline:
                           raise SystemExit(0)
 
                       for issue in issues:
+
                           key = issue.get("key", "")
 
                           fields = issue.get("fields", {})
-
-                          summary = fields.get("summary", "") or ""
 
                           status = (
                               fields.get("status", {}) or {}
@@ -239,23 +233,14 @@ pipeline:
                               fields.get("issuetype", {}) or {}
                           ).get("name", "")
 
-                          labels = fields.get("labels", []) or []
-
                           if issue_type.lower() != "epic":
                               continue
 
-                          if release_name and release_name in summary.lower():
-                              print("EPIC_EXISTS=true")
-                              print(f"EPIC_KEY={key}")
-                              print(f"EPIC_STATUS={status}")
-                              raise SystemExit(0)
+                          print("EPIC_EXISTS=true")
+                          print(f"EPIC_KEY={key}")
+                          print(f"EPIC_STATUS={status}")
 
-                          for label in labels:
-                              if str(label).lower() == release_label:
-                                  print("EPIC_EXISTS=true")
-                                  print(f"EPIC_KEY={key}")
-                                  print(f"EPIC_STATUS={status}")
-                                  raise SystemExit(0)
+                          raise SystemExit(0)
 
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
@@ -328,8 +313,8 @@ pipeline:
                   timeout: 5m
               - step:
                   type: JiraCreate
-                  name: Create_Child_Vulnerability_Ticket
-                  identifier: Create_Child_Vulnerability_Ticket
+                  name: Create_Child_Tickets_New_Epic
+                  identifier: Create_Child_Tickets_New_Epic
                   when:
                     stageStatus: Success
                     condition: |-
@@ -356,6 +341,47 @@ pipeline:
                           Release: <+pipeline.variables.release_name>
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
+                  timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: MarkAsSuccess
+                  strategy:
+                    repeat:
+                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
+                      maxConcurrency: 5
+              - step:
+                  type: JiraCreate
+                  name: Create_Child_Tickets_Existing_Epic
+                  identifier: Create_Child_Tickets_Existing_Epic
+                  when:
+                    stageStatus: Success
+                    condition: |-
+                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "true" &&
+                      <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> != "Done"
+                  spec:
+                    connectorRef: cegekapocjira
+                    projectKey: <+pipeline.variables.jira_project_key>
+                    issueType: <+pipeline.variables.jira_child_issue_type>
+                    fields:
+                      - name: Reporter
+                        value: manjunath.chavan2017@gmail.com
+                      - name: Summary
+                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
+                      - name: Description
+                        value: |-
+                          Advisory / CVE: <+repeat.item.split("~")[0]>
+                          Severity: <+repeat.item.split("~")[1]>
+                          Package: <+repeat.item.split("~")[2]>
+                          Vulnerable range: <+repeat.item.split("~")[3]>
+                          CVSS score: <+repeat.item.split("~")[4]>
+                          Details: <+repeat.item.split("~")[5]>
+
+                          Release: <+pipeline.variables.release_name>
+                      - name: Parent
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
                   timeout: 5m
                   failureStrategies:
                     - onFailure:
