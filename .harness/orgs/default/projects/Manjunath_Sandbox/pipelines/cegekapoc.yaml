@@ -53,7 +53,6 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -80,6 +79,7 @@ pipeline:
                     command: |-
                       cd sample-app
 
+                      # Continue the pipeline even when npm audit finds vulnerabilities.
                       npm audit --json > /harness/npm-audit.json || true
 
                       cat /harness/npm-audit.json
@@ -107,21 +107,11 @@ pipeline:
                         $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
 
-                      echo "=============================================="
-                      echo "Contents of vuln_vars.env"
-                      echo "=============================================="
-
                       cat /harness/vuln_vars.env
-
-                      echo "=============================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
-                      echo "VULN_ITEMS=$VULN_ITEMS"
                     outputVariables:
                       - name: RELEASE_NAME
                       - name: VULN_COUNT
@@ -170,25 +160,9 @@ pipeline:
                     command: |-
                       set -e
 
-                      echo "=============================================="
-                      echo "JIRA LOOKUP"
-                      echo "=============================================="
-
-                      echo "JIRA URL: $JIRA_URL"
-                      echo "PROJECT: $JIRA_PROJECT_KEY"
-                      echo "RELEASE NAME: $RELEASE_NAME"
-                      echo "RELEASE LABEL: $RELEASE_LABEL"
-
-                      echo "=============================================="
-
                       RESPONSE_FILE="/tmp/jira-response.json"
 
                       JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
-
-                      echo "JQL:"
-                      echo "$JQL"
-
-                      echo "=============================================="
 
                       export SEARCH_JQL="$JQL"
 
@@ -221,28 +195,11 @@ pipeline:
                         "${JIRA_URL}/rest/api/3/search/jql" \
                         --data "$REQUEST_BODY")"
 
-                      echo "=============================================="
-                      echo "JIRA HTTP STATUS"
-                      echo "=============================================="
-
-                      echo "$HTTP_CODE"
-
-                      echo "=============================================="
-                      echo "JIRA RESPONSE"
-                      echo "=============================================="
-
-                      cat "$RESPONSE_FILE"
-
-                      echo ""
-
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed."
+                        echo "ERROR: Jira search failed with HTTP status $HTTP_CODE"
+                        cat "$RESPONSE_FILE"
                         exit 1
                       fi
-
-                      echo "=============================================="
-                      echo "INSPECTING JIRA EPICS"
-                      echo "=============================================="
 
                       export RESPONSE_FILE
                       export RELEASE_NAME
@@ -261,18 +218,13 @@ pipeline:
 
                       issues = data.get("issues", [])
 
-                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
-
                       if not issues:
-                          print("NO_EPICS_RETURNED_FROM_JIRA")
                           print("EPIC_EXISTS=false")
                           print("EPIC_KEY=")
                           print("EPIC_STATUS=")
-                          print("EPIC_SUMMARY=")
                           raise SystemExit(0)
 
                       for issue in issues:
-
                           key = issue.get("key", "")
 
                           fields = issue.get("fields", {})
@@ -289,54 +241,27 @@ pipeline:
 
                           labels = fields.get("labels", []) or []
 
-                          print(
-                              f"EPIC_CHECK "
-                              f"key={key} "
-                              f"type={issue_type} "
-                              f"status={status} "
-                              f"summary={summary}"
-                          )
-
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name and release_name in summary.lower():
-
-                              print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
                           for label in labels:
-
                               if str(label).lower() == release_label:
-
-                                  print("MATCH_FOUND_BY_RELEASE_LABEL")
                                   print("EPIC_EXISTS=true")
                                   print(f"EPIC_KEY={key}")
                                   print(f"EPIC_STATUS={status}")
-                                  print(f"EPIC_SUMMARY={summary}")
-
                                   raise SystemExit(0)
 
-                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
-                      print("EPIC_SUMMARY=")
                       PY
                       )"
-
-                      echo "=============================================="
-                      echo "MATCH RESULT"
-                      echo "=============================================="
-
-                      echo "$MATCH_RESULT"
-
-                      echo "=============================================="
 
                       EPIC_EXISTS="$(echo "$MATCH_RESULT" \
                         | grep '^EPIC_EXISTS=' \
@@ -353,16 +278,6 @@ pipeline:
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
                       fi
-
-                      echo "=============================================="
-                      echo "FINAL JIRA LOOKUP RESULT"
-                      echo "=============================================="
-
-                      echo "EPIC_EXISTS=$EPIC_EXISTS"
-                      echo "EPIC_KEY=$EPIC_KEY"
-                      echo "EPIC_STATUS=$EPIC_STATUS"
-
-                      echo "=============================================="
 
                       export EPIC_EXISTS
                       export EPIC_KEY
