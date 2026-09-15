@@ -85,6 +85,9 @@ pipeline:
 
                           echo "Normalized token length: $TOKEN_LENGTH"
 
+                          echo "Token prefix: $(printf '%s' "$GITHUB_TOKEN" | cut -c1-11)"
+                          echo "Token suffix: $(printf '%s' "$GITHUB_TOKEN" | tail -c 7)"
+
                           if [ "$TOKEN_LENGTH" -eq 0 ]; then
                             echo "ERROR: GitHub token is empty after normalization."
                             exit 1
@@ -602,5 +605,5 @@ pipeline:
                                 type: MarkAsSuccess
                         strategy:
                           repeat:
-                            items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
+                            items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@").toString()>
                             maxConcurrency: 5
