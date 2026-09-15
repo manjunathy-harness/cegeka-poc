@@ -96,7 +96,18 @@ pipeline:
                             exit 1
                           fi
 
+                          GITHUB_USER="$(python3 - <<'PY'
+                          import json
+
+                          with open("/tmp/github-user.json", "r") as f:
+                              data = json.load(f)
+
+                          print(data.get("login", ""))
+                          PY
+                          )"
+
                           echo "GitHub authentication: SUCCESS"
+                          echo "GitHub user: $GITHUB_USER"
 
                           echo "=============================================="
                           echo "CHECKING REPOSITORY ACCESS"
@@ -120,8 +131,6 @@ pipeline:
 
                           echo "Repository access: SUCCESS"
 
-                          export GIT_TERMINAL_PROMPT=0
-
                           GIT_REPO_URL="https://github.com/manjunathy-harness/cegeka-poc.git"
                           GIT_BRANCH="main"
 
@@ -140,6 +149,28 @@ pipeline:
                           cd /tmp/cegeka-poc
 
                           echo "Repository cloned successfully."
+
+                          echo "=============================================="
+                          echo "CONFIGURING GIT CREDENTIALS"
+                          echo "=============================================="
+
+                          GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
+
+                          rm -f "$GIT_CREDENTIAL_FILE"
+
+                          printf 'https://%s:%s@github.com\n' \
+                            "$GITHUB_USER" \
+                            "$GITHUB_TOKEN" \
+                            > "$GIT_CREDENTIAL_FILE"
+
+                          chmod 600 "$GIT_CREDENTIAL_FILE"
+
+                          git config credential.helper \
+                            "store --file=$GIT_CREDENTIAL_FILE"
+
+                          export GIT_TERMINAL_PROMPT=0
+
+                          echo "Git credential helper configured."
 
                           echo "=============================================="
                           echo "FETCHING GIT TAGS"
@@ -194,6 +225,7 @@ pipeline:
                             origin \
                             "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
                             echo "ERROR: Tag $NEW_TAG already exists in remote."
+                            rm -f "$GIT_CREDENTIAL_FILE"
                             exit 1
                           fi
 
@@ -214,14 +246,33 @@ pipeline:
                           echo "PUSHING GIT TAG"
                           echo "=============================================="
 
-                          git -c credential.helper='!f() { printf "username=x-access-token\n"; printf "password=%s\n" "$GITHUB_TOKEN"; }; f' \
-                            push origin "$NEW_TAG"
+                          git push origin "$NEW_TAG"
 
                           echo "=============================================="
                           echo "GIT TAG PUSH SUCCESSFUL"
                           echo "=============================================="
 
                           echo "Pushed tag: $NEW_TAG"
+
+                          echo "=============================================="
+                          echo "VERIFYING REMOTE TAG"
+                          echo "=============================================="
+
+                          if git ls-remote \
+                            --exit-code \
+                            --tags \
+                            origin \
+                            "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+                            echo "Remote tag verified: $NEW_TAG"
+                          else
+                            echo "ERROR: Remote tag verification failed."
+                            rm -f "$GIT_CREDENTIAL_FILE"
+                            exit 1
+                          fi
+
+                          rm -f "$GIT_CREDENTIAL_FILE"
+
+                          echo "Temporary Git credentials removed."
 
                           echo "=============================================="
                           echo "RELEASE VERSION CREATED SUCCESSFULLY"
