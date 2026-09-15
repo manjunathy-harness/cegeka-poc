@@ -42,18 +42,15 @@ pipeline:
                           echo "GITHUB SECRET TEST"
                           echo "=============================================="
 
-                          echo "Checking GITHUB_TOKEN..."
+                          GITHUB_TOKEN='<+secrets.getValue("cegeka_github_pat")>'
 
                           if [ -z "$GITHUB_TOKEN" ]; then
                             echo "ERROR: GITHUB_TOKEN is EMPTY"
-                            echo "Harness could not resolve secret: cegeka_github_pat"
                             exit 1
                           fi
 
                           TOKEN_LENGTH="$(printf '%s' "$GITHUB_TOKEN" | wc -c | tr -d ' ')"
-
                           TOKEN_PREFIX="$(printf '%s' "$GITHUB_TOKEN" | cut -c1-11)"
-
                           TOKEN_SUFFIX="$(printf '%s' "$GITHUB_TOKEN" | tail -c 7)"
 
                           echo "Token length: $TOKEN_LENGTH"
@@ -78,11 +75,7 @@ pipeline:
                             echo "=============================================="
                             echo "GITHUB AUTHENTICATION FAILED"
                             echo "=============================================="
-                            echo ""
-                            echo "GitHub response:"
                             cat /tmp/github-user.json
-                            echo ""
-                            echo "The Harness secret is being rejected by GitHub."
                             exit 1
                           fi
 
@@ -90,14 +83,13 @@ pipeline:
                           echo "GITHUB AUTHENTICATION SUCCESS"
                           echo "=============================================="
 
-                          echo "GitHub user:"
                           python3 - <<'PY'
                           import json
 
                           with open("/tmp/github-user.json", "r") as f:
                               data = json.load(f)
 
-                          print(data.get("login", "unknown"))
+                          print("GitHub user:", data.get("login", "unknown"))
                           PY
 
                           echo "=============================================="
@@ -118,9 +110,7 @@ pipeline:
                             echo "=============================================="
                             echo "REPOSITORY ACCESS FAILED"
                             echo "=============================================="
-                            echo ""
                             cat /tmp/github-repo.json
-                            echo ""
                             exit 1
                           fi
 
@@ -141,8 +131,4 @@ pipeline:
                           echo "=============================================="
                           echo "ALL GITHUB TESTS PASSED"
                           echo "=============================================="
-                    environmentVariables:
-                      - name: GITHUB_TOKEN
-                        type: String
-                        value: <+secrets.getValue("cegeka_github_pat")>
                   timeout: 10m
