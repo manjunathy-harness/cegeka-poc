@@ -10,10 +10,6 @@ pipeline:
         connectorRef: cegekapoc
         build: <+input>
   variables:
-    - name: release_name
-      type: String
-      required: true
-      value: <+input>
     - name: jira_project_key
       type: String
       required: false
@@ -30,7 +26,215 @@ pipeline:
       type: String
       required: false
       value: low
+    - name: github_token
+      type: Secret
+      required: true
+      value: <+input>
   stages:
+    - stage:
+        name: Release_Queue
+        identifier: Release_Queue
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: Queue
+                  name: Release_Version_Queue
+                  identifier: Release_Version_Queue
+                  spec:
+                    key: cegeka-release-version
+                    scope: Pipeline
+              - step:
+                  type: ShellScript
+                  name: Generate_Release_Version
+                  identifier: Generate_Release_Version
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
+
+                          echo "=============================================="
+                          echo "CEGEKA RELEASE VERSION GENERATION"
+                          echo "=============================================="
+
+                          GITHUB_USER="manjunathy-harness"
+                          REPO="cegeka-poc"
+                          BRANCH="main"
+
+                          GITHUB_TOKEN="<+pipeline.variables.github_token>"
+
+                          echo "GitHub User: ${GITHUB_USER}"
+                          echo "Repository: ${GITHUB_USER}/${REPO}"
+                          echo "Branch: ${BRANCH}"
+
+                          echo "=============================================="
+                          echo "VALIDATING GITHUB TOKEN"
+                          echo "=============================================="
+
+                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
+
+                          echo "Token length: ${TOKEN_LENGTH}"
+                          echo "Token prefix: ${GITHUB_TOKEN:0:11}"
+
+                          GITHUB_HTTP_STATUS="$(curl -sS \
+                            -o /tmp/github_user.json \
+                            -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            https://api.github.com/user)"
+
+                          echo "GitHub HTTP status: ${GITHUB_HTTP_STATUS}"
+
+                          if [ "$GITHUB_HTTP_STATUS" != "200" ]; then
+                            echo "ERROR: GitHub authentication failed."
+                            cat /tmp/github_user.json
+                            exit 1
+                          fi
+
+                          echo "GitHub authentication: SUCCESS"
+
+                          GITHUB_LOGIN="$(sed -n 's/.*"login":"\([^"]*\)".*/\1/p' /tmp/github_user.json | head -1)"
+
+                          echo "GitHub user: ${GITHUB_LOGIN}"
+
+                          echo "=============================================="
+                          echo "VALIDATING REPOSITORY ACCESS"
+                          echo "=============================================="
+
+                          REPO_HTTP_STATUS="$(curl -sS \
+                            -o /tmp/github_repo.json \
+                            -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
+
+                          echo "Repository HTTP status: ${REPO_HTTP_STATUS}"
+
+                          if [ "$REPO_HTTP_STATUS" != "200" ]; then
+                            echo "ERROR: Repository access failed."
+                            cat /tmp/github_repo.json
+                            exit 1
+                          fi
+
+                          echo "REPOSITORY ACCESS SUCCESS"
+
+                          echo "=============================================="
+                          echo "CLONING REPOSITORY"
+                          echo "=============================================="
+
+                          WORK_DIR="/tmp/cegeka-release"
+
+                          rm -rf "$WORK_DIR"
+
+                          git clone \
+                            --branch "$BRANCH" \
+                            "https://github.com/${GITHUB_USER}/${REPO}.git" \
+                            "$WORK_DIR"
+
+                          cd "$WORK_DIR"
+
+                          git fetch --tags --force origin
+
+                          echo "=============================================="
+                          echo "EXISTING RELEASE TAGS"
+                          echo "=============================================="
+
+                          git tag -l |
+                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
+                            sort -V || true
+
+                          LATEST_TAG="$(
+                            git tag -l |
+                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
+                            sort -V |
+                            tail -1
+                          )"
+
+                          if [ -z "$LATEST_TAG" ]; then
+                            NEW_TAG="v1.0.0.1"
+                          else
+                            VERSION="${LATEST_TAG#v}"
+
+                            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+                            MINOR="$(echo "$VERSION" | cut -d. -f2)"
+                            PATCH="$(echo "$VERSION" | cut -d. -f3)"
+                            BUILD="$(echo "$VERSION" | cut -d. -f4)"
+
+                            BUILD=$((BUILD + 1))
+
+                            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
+                          fi
+
+                          RELEASE_NAME="${NEW_TAG#v}"
+
+                          echo "=============================================="
+                          echo "RELEASE VERSION"
+                          echo "=============================================="
+
+                          echo "Latest tag : ${LATEST_TAG:-NONE}"
+                          echo "New tag    : ${NEW_TAG}"
+                          echo "Release    : ${RELEASE_NAME}"
+
+                          echo "=============================================="
+                          echo "CREATING GIT TAG"
+                          echo "=============================================="
+
+                          git config user.name "Harness Release Automation"
+                          git config user.email "harness-release@harness.io"
+
+                          git tag "$NEW_TAG" "$(git rev-parse HEAD)"
+
+                          echo "Local tag created: ${NEW_TAG}"
+
+                          echo "=============================================="
+                          echo "PUSHING TAG TO GITHUB"
+                          echo "=============================================="
+
+                          GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
+
+                          rm -f "$GIT_CREDENTIAL_FILE"
+
+                          printf 'https://%s:%s@github.com\n' \
+                            "$GITHUB_USER" \
+                            "$GITHUB_TOKEN" \
+                            > "$GIT_CREDENTIAL_FILE"
+
+                          chmod 600 "$GIT_CREDENTIAL_FILE"
+
+                          git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
+
+                          git push origin "$NEW_TAG"
+
+                          echo "Git tag pushed successfully: ${NEW_TAG}"
+
+                          echo "=============================================="
+                          echo "VERIFYING REMOTE TAG"
+                          echo "=============================================="
+
+                          git ls-remote --tags origin "$NEW_TAG"
+
+                          rm -f "$GIT_CREDENTIAL_FILE"
+
+                          echo "=============================================="
+                          echo "RELEASE GENERATION COMPLETE"
+                          echo "=============================================="
+
+                          export RELEASE_NAME
+                          export RELEASE_TAG="$NEW_TAG"
+                    environmentVariables: []
+                    outputVariables:
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+                      - name: RELEASE_TAG
+                        type: String
+                        value: RELEASE_TAG
+                    timeout: 10m
     - stage:
         name: Build_And_Scan
         identifier: Build_And_Scan
@@ -87,11 +291,13 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
+
                       SEVERITY_FLAG=""
+
                       if [ -n "$MIN_SEVERITY" ]; then
                         SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
                       fi
@@ -102,7 +308,13 @@ pipeline:
                         $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
 
+                      echo "=============================================="
+                      echo "Contents of vuln_vars.env"
+                      echo "=============================================="
+
                       cat /harness/vuln_vars.env
+
+                      echo "=============================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
@@ -122,7 +334,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      RELEASE_NAME: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
                     command: |-
                       set -e
 
@@ -153,7 +365,7 @@ pipeline:
                       JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
@@ -162,14 +374,18 @@ pipeline:
                       echo "=============================================="
                       echo "JIRA EPIC LOOKUP"
                       echo "=============================================="
+
                       echo "PROJECT=$JIRA_PROJECT_KEY"
                       echo "RELEASE=$RELEASE_NAME"
                       echo "LABEL=$RELEASE_LABEL"
+
                       echo "=============================================="
 
                       RESPONSE_FILE="/tmp/jira-response.json"
 
                       export SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
+
+                      echo "JQL=$SEARCH_JQL"
 
                       REQUEST_BODY="$(python3 - <<'PY'
                       import json
@@ -190,6 +406,10 @@ pipeline:
                       PY
                       )"
 
+                      echo "=============================================="
+                      echo "SEARCHING JIRA"
+                      echo "=============================================="
+
                       HTTP_CODE="$(curl -sS \
                         -o "$RESPONSE_FILE" \
                         -w "%{http_code}" \
@@ -207,6 +427,12 @@ pipeline:
                         cat "$RESPONSE_FILE"
                         exit 1
                       fi
+
+                      echo "Jira search successful."
+
+                      echo "=============================================="
+                      echo "SEARCHING FOR EXISTING RELEASE EPIC"
+                      echo "=============================================="
 
                       export RESPONSE_FILE
                       export RELEASE_NAME
@@ -264,7 +490,10 @@ pipeline:
 
                       echo "=============================================="
                       echo "MATCH RESULT"
+                      echo "=============================================="
+
                       echo "$MATCH_RESULT"
+
                       echo "=============================================="
 
                       export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
@@ -311,10 +540,10 @@ pipeline:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: Security scan results - <+pipeline.variables.release_name> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                        value: Security scan results - <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                       - name: Description
                         value: |-
-                          Automated security scan for release <+pipeline.variables.release_name>.
+                          Automated security scan for release <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
 
                           Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
@@ -349,7 +578,7 @@ pipeline:
                           CVSS score: <+repeat.item.split("~")[4]>
                           Details: <+repeat.item.split("~")[5]>
 
-                          Release: <+pipeline.variables.release_name>
+                          Release: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       - name: Parent
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
                     timeout: 5m
