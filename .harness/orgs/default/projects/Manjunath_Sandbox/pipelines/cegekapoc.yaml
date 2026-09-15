@@ -6,17 +6,17 @@ pipeline:
   tags: {}
   stages:
     - stage:
-        name: Jira_Auth_Test
-        identifier: Jira_Auth_Test
-        description: Test Jira authentication only
+        name: Jira_Search_Test
+        identifier: Jira_Search_Test
+        description: Test Jira Epic search only
         type: Custom
         spec:
           execution:
             steps:
               - step:
                   type: ShellScript
-                  name: Test_Jira_Authentication
-                  identifier: Test_Jira_Authentication
+                  name: Test_Jira_Epic_Search
+                  identifier: Test_Jira_Epic_Search
                   spec:
                     shell: Bash
                     executionTarget: {}
@@ -27,7 +27,7 @@ pipeline:
                           set -e
 
                           echo "=============================================="
-                          echo "JIRA AUTHENTICATION TEST"
+                          echo "JIRA EPIC SEARCH TEST"
                           echo "=============================================="
 
                           JIRA_EMAIL="<+secrets.getValue('cegeka_jira_email')>"
@@ -35,38 +35,135 @@ pipeline:
 
                           JIRA_API_BASE="https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3"
 
-                          echo "JIRA EMAIL: ${JIRA_EMAIL}"
-                          echo "TOKEN LENGTH: ${#JIRA_API_TOKEN}"
-                          echo "TOKEN PREFIX: ${JIRA_API_TOKEN:0:8}"
+                          JIRA_PROJECT_KEY="SCRUM"
+
+                          echo "PROJECT=$JIRA_PROJECT_KEY"
+                          echo "TOKEN LENGTH=${#JIRA_API_TOKEN}"
+                          echo "TOKEN PREFIX=${JIRA_API_TOKEN:0:8}"
 
                           echo "=============================================="
-                          echo "TESTING JIRA /myself"
+                          echo "STEP 1: TEST AUTHENTICATION"
                           echo "=============================================="
 
-                          HTTP_STATUS="$(curl -sS \
-                            -o /tmp/jira-response.json \
+                          AUTH_STATUS="$(curl -sS \
+                            -o /tmp/jira-auth-response.json \
                             -w "%{http_code}" \
                             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
                             -H "Accept: application/json" \
                             "${JIRA_API_BASE}/myself")"
 
-                          echo "JIRA HTTP STATUS: ${HTTP_STATUS}"
+                          echo "AUTH HTTP STATUS=$AUTH_STATUS"
+
+                          if [ "$AUTH_STATUS" != "200" ]; then
+                            echo "ERROR: Jira authentication failed."
+                            cat /tmp/jira-auth-response.json
+                            exit 1
+                          fi
+
+                          echo "JIRA AUTHENTICATION: SUCCESS"
 
                           echo "=============================================="
-                          echo "JIRA RESPONSE"
+                          echo "STEP 2: SEARCH JIRA EPICS"
                           echo "=============================================="
 
-                          cat /tmp/jira-response.json
+                          SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
+
+                          echo "JQL=$SEARCH_JQL"
+
+                          REQUEST_BODY="$(python3 - <<'PY'
+                          import json
+                          import os
+
+                          body = {
+                              "jql": os.environ["SEARCH_JQL"],
+                              "maxResults": 100,
+                              "fields": [
+                                  "summary",
+                                  "status",
+                                  "issuetype",
+                                  "labels"
+                              ]
+                          }
+
+                          print(json.dumps(body))
+                          PY
+                          )"
+
+                          echo "=============================================="
+                          echo "REQUEST BODY"
+                          echo "=============================================="
+
+                          echo "$REQUEST_BODY"
+
+                          echo "=============================================="
+                          echo "CALLING /search/jql"
+                          echo "=============================================="
+
+                          SEARCH_STATUS="$(curl -sS \
+                            -o /tmp/jira-search-response.json \
+                            -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                            -X POST \
+                            -H "Accept: application/json" \
+                            -H "Content-Type: application/json" \
+                            "${JIRA_API_BASE}/search/jql" \
+                            --data "$REQUEST_BODY")"
+
+                          echo "JIRA SEARCH HTTP STATUS=$SEARCH_STATUS"
+
+                          echo "=============================================="
+                          echo "JIRA SEARCH RESPONSE"
+                          echo "=============================================="
+
+                          cat /tmp/jira-search-response.json
 
                           echo ""
                           echo "=============================================="
 
-                          if [ "$HTTP_STATUS" = "200" ]; then
-                            echo "JIRA AUTHENTICATION: SUCCESS"
-                            echo "=============================================="
-                          else
-                            echo "JIRA AUTHENTICATION: FAILED"
+                          if [ "$SEARCH_STATUS" != "200" ]; then
+                            echo "JIRA EPIC SEARCH: FAILED"
                             echo "=============================================="
                             exit 1
                           fi
-                    environmentVariables: []
+
+                          echo "JIRA EPIC SEARCH: SUCCESS"
+                          echo "=============================================="
+
+                          echo "=============================================="
+                          echo "EPICS FOUND"
+                          echo "=============================================="
+
+                          python3 - <<'PY'
+                          import json
+
+                          with open("/tmp/jira-search-response.json") as f:
+                              data = json.load(f)
+
+                          issues = data.get("issues", [])
+
+                          print("TOTAL EPICS FOUND:", len(issues))
+                          print("")
+
+                          for issue in issues:
+                              fields = issue.get("fields", {})
+                              summary = fields.get("summary", "")
+                              status = fields.get("status", {}).get("name", "")
+                              labels = fields.get("labels", [])
+
+                              print("----------------------------------------------")
+                              print("KEY    :", issue.get("key"))
+                              print("SUMMARY:", summary)
+                              print("STATUS :", status)
+                              print("LABELS :", ", ".join(labels))
+                              print("----------------------------------------------")
+                          PY
+
+                          echo ""
+                          echo "=============================================="
+                          echo "JIRA SEARCH TEST COMPLETED SUCCESSFULLY"
+                          echo "=============================================="
+                    environmentVariables:
+                      - name: SEARCH_JQL
+                        type: String
+                        value: project = SCRUM AND issuetype = Epic ORDER BY created DESC
+                    outputVariables: []
