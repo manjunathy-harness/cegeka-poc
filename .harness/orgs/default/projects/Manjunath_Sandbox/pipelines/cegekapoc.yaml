@@ -59,13 +59,20 @@ pipeline:
                           echo "GENERATING RELEASE VERSION"
                           echo "=============================================="
 
+                          # --------------------------------------------------
+                          # GitHub authentication
+                          # --------------------------------------------------
                           GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
 
                           cat > "$GIT_ASKPASS_SCRIPT" <<'EOF'
                           #!/bin/sh
                           case "$1" in
-                            *Username*) echo "x-access-token" ;;
-                            *Password*) echo "$GITHUB_TOKEN" ;;
+                            *Username*)
+                              echo "x-access-token"
+                              ;;
+                            *Password*)
+                              echo "$GITHUB_TOKEN"
+                              ;;
                           esac
                           EOF
 
@@ -74,7 +81,55 @@ pipeline:
                           export GIT_ASKPASS="$GIT_ASKPASS_SCRIPT"
                           export GIT_TERMINAL_PROMPT=0
 
+                          # --------------------------------------------------
+                          # Validate GitHub PAT
+                          # --------------------------------------------------
+                          echo "Checking GitHub token authentication..."
+
+                          GITHUB_HTTP_CODE="$(curl -sS \
+                            -o /tmp/github-user.json \
+                            -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            https://api.github.com/user)"
+
+                          echo "GitHub token HTTP status: $GITHUB_HTTP_CODE"
+
+                          if [ "$GITHUB_HTTP_CODE" != "200" ]; then
+                            echo "ERROR: GitHub token authentication failed."
+                            echo "Check the Harness secret: cegeka_github_pat"
+                            cat /tmp/github-user.json
+                            exit 1
+                          fi
+
+                          echo "GitHub token authentication: SUCCESS"
+
+                          # --------------------------------------------------
+                          # Validate repository access
+                          # --------------------------------------------------
+                          REPO_HTTP_CODE="$(curl -sS \
+                            -o /tmp/github-repo.json \
+                            -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            https://api.github.com/repos/manjunathy-harness/cegeka-poc)"
+
+                          echo "GitHub repository HTTP status: $REPO_HTTP_CODE"
+
+                          if [ "$REPO_HTTP_CODE" != "200" ]; then
+                            echo "ERROR: GitHub token cannot access the repository."
+                            cat /tmp/github-repo.json
+                            exit 1
+                          fi
+
+                          echo "GitHub repository access: SUCCESS"
+
+                          # --------------------------------------------------
+                          # Clone repository
+                          # --------------------------------------------------
                           rm -rf /tmp/cegeka-poc
+
+                          echo "Cloning repository..."
 
                           git clone \
                             --branch "$GIT_BRANCH" \
@@ -84,13 +139,27 @@ pipeline:
 
                           cd /tmp/cegeka-poc
 
+                          # --------------------------------------------------
+                          # Get all Git tags
+                          # --------------------------------------------------
                           git fetch --tags --force
 
+                          # --------------------------------------------------
+                          # Find latest release tag
+                          #
+                          # Expected format:
+                          # v1.0.0.1
+                          # v1.0.0.2
+                          # v1.0.0.3
+                          # --------------------------------------------------
                           LATEST_TAG="$(git tag --list \
                             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
                             | sort -V \
                             | tail -1 || true)"
 
+                          # --------------------------------------------------
+                          # Generate next release tag
+                          # --------------------------------------------------
                           if [ -z "$LATEST_TAG" ]; then
                             NEW_TAG="v1.0.0.1"
                           else
@@ -107,22 +176,48 @@ pipeline:
                           fi
 
                           RELEASE_NAME="$(echo "$NEW_TAG" | sed 's/^v//')"
+
                           COMMIT_SHA="$(git rev-parse HEAD)"
 
+                          echo "=============================================="
+                          echo "RELEASE INFORMATION"
+                          echo "=============================================="
                           echo "Latest tag : ${LATEST_TAG:-none}"
                           echo "New tag    : $NEW_TAG"
                           echo "Release    : $RELEASE_NAME"
                           echo "Commit     : $COMMIT_SHA"
+                          echo "=============================================="
 
-                          if git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+                          # --------------------------------------------------
+                          # Double-check that tag does not already exist
+                          # --------------------------------------------------
+                          if git ls-remote \
+                            --exit-code \
+                            --tags \
+                            origin \
+                            "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+
                             echo "ERROR: Tag $NEW_TAG already exists in remote."
                             exit 1
                           fi
 
+                          # --------------------------------------------------
+                          # Configure Git
+                          # --------------------------------------------------
                           git config user.name "Harness Release Automation"
                           git config user.email "harness-release@harness.io"
 
+                          # --------------------------------------------------
+                          # Create tag
+                          # --------------------------------------------------
                           git tag "$NEW_TAG" "$COMMIT_SHA"
+
+                          echo "Git tag created locally: $NEW_TAG"
+
+                          # --------------------------------------------------
+                          # Push tag
+                          # --------------------------------------------------
+                          echo "Pushing tag to GitHub..."
 
                           git push origin "$NEW_TAG"
 
@@ -132,6 +227,7 @@ pipeline:
                           echo "RELEASE_NAME=$RELEASE_NAME"
                           echo "RELEASE_TAG=$NEW_TAG"
                           echo "COMMIT_SHA=$COMMIT_SHA"
+                          echo "=============================================="
 
                           rm -f "$GIT_ASKPASS_SCRIPT"
                     environmentVariables:
@@ -177,6 +273,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -202,7 +299,9 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm audit --json > /harness/npm-audit.json || true
+
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -231,11 +330,15 @@ pipeline:
                       cat /harness/vuln_vars.env
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
+
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
+
                       export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
+
                       echo "VULN_COUNT=$VULN_COUNT"
+
                       echo "VULN_ITEMS=$VULN_ITEMS"
                     outputVariables:
                       - name: RELEASE_NAME
@@ -261,6 +364,7 @@ pipeline:
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
+
                       echo "RELEASE_LABEL=$RELEASE_LABEL"
 
                       export RELEASE_LABEL
@@ -288,9 +392,13 @@ pipeline:
                       echo "=============================================="
                       echo "JIRA EPIC LOOKUP"
                       echo "=============================================="
+
                       echo "PROJECT=$JIRA_PROJECT_KEY"
+
                       echo "RELEASE=$RELEASE_NAME"
+
                       echo "LABEL=$RELEASE_LABEL"
+
                       echo "=============================================="
 
                       RESPONSE_FILE="/tmp/jira-response.json"
@@ -330,7 +438,9 @@ pipeline:
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
                         echo "ERROR: Jira search failed."
+
                         cat "$RESPONSE_FILE"
+
                         exit 1
                       fi
 
@@ -342,10 +452,15 @@ pipeline:
                       import json
                       import os
 
-                      with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
+                      with open(
+                          os.environ["RESPONSE_FILE"],
+                          "r",
+                          encoding="utf-8"
+                      ) as f:
                           data = json.load(f)
 
                       release_name = os.environ["RELEASE_NAME"].strip().lower()
+
                       release_label = os.environ["RELEASE_LABEL"].strip().lower()
 
                       issues = data.get("issues", [])
@@ -354,11 +469,19 @@ pipeline:
 
                       for issue in issues:
                           key = issue.get("key", "")
+
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-                          status = (fields.get("status", {}) or {}).get("name", "")
-                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "")
+
+                          status = (
+                              fields.get("status", {}) or {}
+                          ).get("name", "")
+
+                          issue_type = (
+                              fields.get("issuetype", {}) or {}
+                          ).get("name", "")
+
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
@@ -366,24 +489,41 @@ pipeline:
 
                           if release_name in summary.lower():
                               print("MATCH_FOUND_BY_RELEASE_NAME")
+
                               print("EPIC_EXISTS=true")
+
                               print(f"EPIC_KEY={key}")
+
                               print(f"EPIC_STATUS={status}")
+
                               print(f"EPIC_SUMMARY={summary}")
+
                               raise SystemExit(0)
 
-                          if release_label in [str(x).lower() for x in labels]:
+                          if release_label in [
+                              str(x).lower()
+                              for x in labels
+                          ]:
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
+
                               print("EPIC_EXISTS=true")
+
                               print(f"EPIC_KEY={key}")
+
                               print(f"EPIC_STATUS={status}")
+
                               print(f"EPIC_SUMMARY={summary}")
+
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
+
                       print("EPIC_EXISTS=false")
+
                       print("EPIC_KEY=")
+
                       print("EPIC_STATUS=")
+
                       print("EPIC_SUMMARY=")
                       PY
                       )"
@@ -393,16 +533,32 @@ pipeline:
                       echo "$MATCH_RESULT"
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
-                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
-                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
+                      export EPIC_EXISTS="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_EXISTS=' |
+                        cut -d= -f2- || true
+                      )"
+
+                      export EPIC_KEY="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_KEY=' |
+                        cut -d= -f2- || true
+                      )"
+
+                      export EPIC_STATUS="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_STATUS=' |
+                        cut -d= -f2- || true
+                      )"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
                       fi
 
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
+
                       echo "EPIC_KEY=$EPIC_KEY"
+
                       echo "EPIC_STATUS=$EPIC_STATUS"
 
                       export EPIC_EXISTS
@@ -453,7 +609,7 @@ pipeline:
                                 Pipeline execution: <+pipeline.executionUrl>
                             - name: Labels
                               value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                          timeout: 5m
+                        timeout: 5m
                     - step:
                         type: JiraCreate
                         name: Create_Child_Vulnerability_Ticket
@@ -479,13 +635,13 @@ pipeline:
                                 Release: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                             - name: Parent
                               value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
-                          timeout: 5m
-                          failureStrategies:
-                            - onFailure:
-                                errors:
-                                  - AllErrors
-                                action:
-                                  type: MarkAsSuccess
+                        timeout: 5m
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: MarkAsSuccess
                         strategy:
                           repeat:
                             items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
