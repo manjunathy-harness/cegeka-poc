@@ -60,7 +60,36 @@ pipeline:
                           echo "=============================================="
 
                           # --------------------------------------------------
-                          # GitHub authentication
+                          # Check Harness secret
+                          # --------------------------------------------------
+                          echo "Checking Harness GitHub secret..."
+
+                          if [ -z "$GITHUB_TOKEN" ]; then
+                            echo "ERROR: GITHUB_TOKEN is empty."
+                            echo "Check Harness secret: cegeka_github_pat"
+                            exit 1
+                          fi
+
+                          TOKEN_LENGTH="$(printf '%s' "$GITHUB_TOKEN" | wc -c | tr -d ' ')"
+
+                          echo "Token length: $TOKEN_LENGTH"
+
+                          case "$GITHUB_TOKEN" in
+                            github_pat_*)
+                              echo "Token format: github_pat_ detected"
+                              ;;
+                            ghp_*)
+                              echo "Token format: classic PAT detected"
+                              ;;
+                            *)
+                              echo "ERROR: Unexpected GitHub token format."
+                              echo "Expected github_pat_ or ghp_ token."
+                              exit 1
+                              ;;
+                          esac
+
+                          # --------------------------------------------------
+                          # GitHub authentication helper
                           # --------------------------------------------------
                           GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
 
@@ -82,7 +111,7 @@ pipeline:
                           export GIT_TERMINAL_PROMPT=0
 
                           # --------------------------------------------------
-                          # Validate GitHub PAT
+                          # Validate GitHub token
                           # --------------------------------------------------
                           echo "Checking GitHub token authentication..."
 
@@ -97,7 +126,7 @@ pipeline:
 
                           if [ "$GITHUB_HTTP_CODE" != "200" ]; then
                             echo "ERROR: GitHub token authentication failed."
-                            echo "Check the Harness secret: cegeka_github_pat"
+                            echo "Check Harness secret: cegeka_github_pat"
                             cat /tmp/github-user.json
                             exit 1
                           fi
@@ -107,6 +136,8 @@ pipeline:
                           # --------------------------------------------------
                           # Validate repository access
                           # --------------------------------------------------
+                          echo "Checking GitHub repository access..."
+
                           REPO_HTTP_CODE="$(curl -sS \
                             -o /tmp/github-repo.json \
                             -w "%{http_code}" \
@@ -117,7 +148,7 @@ pipeline:
                           echo "GitHub repository HTTP status: $REPO_HTTP_CODE"
 
                           if [ "$REPO_HTTP_CODE" != "200" ]; then
-                            echo "ERROR: GitHub token cannot access the repository."
+                            echo "ERROR: GitHub token cannot access repository."
                             cat /tmp/github-repo.json
                             exit 1
                           fi
@@ -127,9 +158,9 @@ pipeline:
                           # --------------------------------------------------
                           # Clone repository
                           # --------------------------------------------------
-                          rm -rf /tmp/cegeka-poc
-
                           echo "Cloning repository..."
+
+                          rm -rf /tmp/cegeka-poc
 
                           git clone \
                             --branch "$GIT_BRANCH" \
@@ -140,14 +171,15 @@ pipeline:
                           cd /tmp/cegeka-poc
 
                           # --------------------------------------------------
-                          # Get all Git tags
+                          # Fetch tags
                           # --------------------------------------------------
+                          echo "Fetching Git tags..."
+
                           git fetch --tags --force
 
                           # --------------------------------------------------
                           # Find latest release tag
-                          #
-                          # Expected format:
+                          # Format:
                           # v1.0.0.1
                           # v1.0.0.2
                           # v1.0.0.3
@@ -189,7 +221,7 @@ pipeline:
                           echo "=============================================="
 
                           # --------------------------------------------------
-                          # Double-check that tag does not already exist
+                          # Check whether tag already exists remotely
                           # --------------------------------------------------
                           if git ls-remote \
                             --exit-code \
@@ -210,6 +242,8 @@ pipeline:
                           # --------------------------------------------------
                           # Create tag
                           # --------------------------------------------------
+                          echo "Creating Git tag..."
+
                           git tag "$NEW_TAG" "$COMMIT_SHA"
 
                           echo "Git tag created locally: $NEW_TAG"
@@ -273,7 +307,6 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -299,9 +332,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm audit --json > /harness/npm-audit.json || true
-
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -336,9 +367,7 @@ pipeline:
                       export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
-
                       echo "VULN_COUNT=$VULN_COUNT"
-
                       echo "VULN_ITEMS=$VULN_ITEMS"
                     outputVariables:
                       - name: RELEASE_NAME
@@ -364,7 +393,6 @@ pipeline:
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
-
                       echo "RELEASE_LABEL=$RELEASE_LABEL"
 
                       export RELEASE_LABEL
@@ -394,9 +422,7 @@ pipeline:
                       echo "=============================================="
 
                       echo "PROJECT=$JIRA_PROJECT_KEY"
-
                       echo "RELEASE=$RELEASE_NAME"
-
                       echo "LABEL=$RELEASE_LABEL"
 
                       echo "=============================================="
@@ -438,9 +464,7 @@ pipeline:
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
                         echo "ERROR: Jira search failed."
-
                         cat "$RESPONSE_FILE"
-
                         exit 1
                       fi
 
@@ -460,7 +484,6 @@ pipeline:
                           data = json.load(f)
 
                       release_name = os.environ["RELEASE_NAME"].strip().lower()
-
                       release_label = os.environ["RELEASE_LABEL"].strip().lower()
 
                       issues = data.get("issues", [])
@@ -469,7 +492,6 @@ pipeline:
 
                       for issue in issues:
                           key = issue.get("key", "")
-
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
@@ -489,15 +511,10 @@ pipeline:
 
                           if release_name in summary.lower():
                               print("MATCH_FOUND_BY_RELEASE_NAME")
-
                               print("EPIC_EXISTS=true")
-
                               print(f"EPIC_KEY={key}")
-
                               print(f"EPIC_STATUS={status}")
-
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
                           if release_label in [
@@ -505,25 +522,16 @@ pipeline:
                               for x in labels
                           ]:
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
-
                               print("EPIC_EXISTS=true")
-
                               print(f"EPIC_KEY={key}")
-
                               print(f"EPIC_STATUS={status}")
-
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
-
                       print("EPIC_EXISTS=false")
-
                       print("EPIC_KEY=")
-
                       print("EPIC_STATUS=")
-
                       print("EPIC_SUMMARY=")
                       PY
                       )"
@@ -556,9 +564,7 @@ pipeline:
                       fi
 
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
-
                       echo "EPIC_KEY=$EPIC_KEY"
-
                       echo "EPIC_STATUS=$EPIC_STATUS"
 
                       export EPIC_EXISTS
