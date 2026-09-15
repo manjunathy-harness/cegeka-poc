@@ -10,10 +10,6 @@ pipeline:
         connectorRef: cegekapoc
         build: <+input>
   variables:
-    - name: release_name
-      type: String
-      required: true
-      value: <+input>
     - name: jira_project_key
       type: String
       required: false
@@ -32,6 +28,21 @@ pipeline:
       value: low
   stages:
     - stage:
+        name: Release_Queue
+        identifier: Release_Queue
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: Queue
+                  name: Queue_Release_Version
+                  identifier: Queue_Release_Version
+                  spec:
+                    key: cegeka-release-version
+                    scope: Pipeline
+                  timeout: 30m
+    - stage:
         name: Build_And_Scan
         identifier: Build_And_Scan
         type: CI
@@ -45,6 +56,61 @@ pipeline:
             spec: {}
           execution:
             steps:
+              - step:
+                  type: Run
+                  name: Generate_Release_Version
+                  identifier: Generate_Release_Version
+                  spec:
+                    shell: Sh
+                    command: |-
+                      set -e
+
+                      echo "=============================================="
+                      echo "GENERATING RELEASE VERSION"
+                      echo "=============================================="
+
+                      git fetch --tags --force
+
+                      LATEST_TAG="$(git tag --list \
+                        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                        | sort -V \
+                        | tail -1 || true)"
+
+                      if [ -z "$LATEST_TAG" ]; then
+                        NEW_TAG="v1.0.0.1"
+                      else
+                        VERSION="$(echo "$LATEST_TAG" | sed 's/^v//')"
+                        MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+                        MINOR="$(echo "$VERSION" | cut -d. -f2)"
+                        PATCH="$(echo "$VERSION" | cut -d. -f3)"
+                        BUILD="$(echo "$VERSION" | cut -d. -f4)"
+
+                        NEXT_BUILD=$((BUILD + 1))
+                        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${NEXT_BUILD}"
+                      fi
+
+                      RELEASE_NAME="$(echo "$NEW_TAG" | sed 's/^v//')"
+
+                      echo "Latest tag : ${LATEST_TAG:-none}"
+                      echo "New tag    : $NEW_TAG"
+                      echo "Release    : $RELEASE_NAME"
+
+                      if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+                        echo "ERROR: Tag $NEW_TAG already exists."
+                        exit 1
+                      fi
+
+                      git config user.name "Harness Release Automation"
+                      git config user.email "harness-release@harness.io"
+
+                      git tag "$NEW_TAG" "$(git rev-parse HEAD)"
+                      git push origin "$NEW_TAG"
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "RELEASE_TAG=$NEW_TAG"
+                    outputVariables:
+                      - name: RELEASE_NAME
+                      - name: RELEASE_TAG
               - step:
                   type: Run
                   name: Install_Dependencies
@@ -87,11 +153,13 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      RELEASE_NAME: <+execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
+
                       SEVERITY_FLAG=""
+
                       if [ -n "$MIN_SEVERITY" ]; then
                         SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
                       fi
@@ -122,7 +190,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      RELEASE_NAME: <+execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                     command: |-
                       set -e
 
@@ -153,7 +221,7 @@ pipeline:
                       JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.variables.release_name>
+                      RELEASE_NAME: <+execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
@@ -296,70 +364,71 @@ pipeline:
         spec:
           execution:
             steps:
-              - step:
-                  type: JiraCreate
-                  name: Create_Parent_Release_Ticket
-                  identifier: Create_Parent_Release_Ticket
+              - stepGroup:
+                  name: Create_Jira_Tickets
+                  identifier: Create_Jira_Tickets
                   when:
                     stageStatus: Success
                     condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_parent_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: Security scan results - <+pipeline.variables.release_name> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
-                      - name: Description
-                        value: |-
-                          Automated security scan for release <+pipeline.variables.release_name>.
+                  steps:
+                    - step:
+                        type: JiraCreate
+                        name: Create_Parent_Release_Ticket
+                        identifier: Create_Parent_Release_Ticket
+                        spec:
+                          connectorRef: cegekapocjira
+                          projectKey: <+pipeline.variables.jira_project_key>
+                          issueType: <+pipeline.variables.jira_parent_issue_type>
+                          fields:
+                            - name: Reporter
+                              value: manjunath.chavan2017@gmail.com
+                            - name: Summary
+                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                            - name: Description
+                              value: |-
+                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
 
-                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+                                Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
-                          Each vulnerability has been filed as a child ticket below.
+                                Each vulnerability has been filed as a child ticket below.
 
-                          Pipeline execution: <+pipeline.executionUrl>
-                      - name: Labels
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                    timeout: 5m
-              - step:
-                  type: JiraCreate
-                  name: Create_Child_Vulnerability_Ticket
-                  identifier: Create_Child_Vulnerability_Ticket
-                  when:
-                    stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_child_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
-                      - name: Description
-                        value: |-
-                          Advisory / CVE: <+repeat.item.split("~")[0]>
-                          Severity: <+repeat.item.split("~")[1]>
-                          Package: <+repeat.item.split("~")[2]>
-                          Vulnerable range: <+repeat.item.split("~")[3]>
-                          CVSS score: <+repeat.item.split("~")[4]>
-                          Details: <+repeat.item.split("~")[5]>
+                                Pipeline execution: <+pipeline.executionUrl>
+                            - name: Labels
+                              value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
+                          timeout: 5m
+                    - step:
+                        type: JiraCreate
+                        name: Create_Child_Vulnerability_Ticket
+                        identifier: Create_Child_Vulnerability_Ticket
+                        spec:
+                          connectorRef: cegekapocjira
+                          projectKey: <+pipeline.variables.jira_project_key>
+                          issueType: <+pipeline.variables.jira_child_issue_type>
+                          fields:
+                            - name: Reporter
+                              value: manjunath.chavan2017@gmail.com
+                            - name: Summary
+                              value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
+                            - name: Description
+                              value: |-
+                                Advisory / CVE: <+repeat.item.split("~")[0]>
+                                Severity: <+repeat.item.split("~")[1]>
+                                Package: <+repeat.item.split("~")[2]>
+                                Vulnerable range: <+repeat.item.split("~")[3]>
+                                CVSS score: <+repeat.item.split("~")[4]>
+                                Details: <+repeat.item.split("~")[5]>
 
-                          Release: <+pipeline.variables.release_name>
-                      - name: Parent
-                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
-                    timeout: 5m
-                    failureStrategies:
-                      - onFailure:
-                          errors:
-                            - AllErrors
-                          action:
-                            type: MarkAsSuccess
-                  strategy:
-                    repeat:
-                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
+                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                            - name: Parent
+                              value: <+execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
+                          timeout: 5m
+                          failureStrategies:
+                            - onFailure:
+                                errors:
+                                  - AllErrors
+                                action:
+                                  type: MarkAsSuccess
+                        strategy:
+                          repeat:
+                            items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
+                            maxConcurrency: 5
