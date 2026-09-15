@@ -525,70 +525,73 @@ pipeline:
         spec:
           execution:
             steps:
-              - step:
-                  type: JiraCreate
-                  name: Create_Parent_Release_Ticket
-                  identifier: Create_Parent_Release_Ticket
+              - stepGroup:
+                  name: Create_Jira_Tickets
+                  identifier: Create_Jira_Tickets
                   when:
                     stageStatus: Success
                     condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_parent_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: Security scan results - <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
-                      - name: Description
-                        value: |-
-                          Automated security scan for release <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
+                  steps:
+                    - step:
+                        type: JiraCreate
+                        name: Create_Parent_Release_Ticket
+                        identifier: Create_Parent_Release_Ticket
+                        spec:
+                          connectorRef: cegekapocjira
+                          projectKey: <+pipeline.variables.jira_project_key>
+                          issueType: <+pipeline.variables.jira_parent_issue_type>
+                          fields:
+                            - name: Reporter
+                              value: manjunath.chavan2017@gmail.com
+                            - name: Summary
+                              value: Security scan results - <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                            - name: Description
+                              value: |-
+                                Automated security scan for release <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
 
-                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+                                Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
-                          Each vulnerability has been filed as a child ticket below.
+                                Each vulnerability has been filed as a child ticket below.
 
-                          Pipeline execution: <+pipeline.executionUrl>
-                      - name: Labels
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                    timeout: 5m
-              - step:
-                  type: JiraCreate
-                  name: Create_Child_Vulnerability_Ticket
-                  identifier: Create_Child_Vulnerability_Ticket
-                  when:
-                    stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_child_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
-                      - name: Description
-                        value: |-
-                          Advisory / CVE: <+repeat.item.split("~")[0]>
-                          Severity: <+repeat.item.split("~")[1]>
-                          Package: <+repeat.item.split("~")[2]>
-                          Vulnerable range: <+repeat.item.split("~")[3]>
-                          CVSS score: <+repeat.item.split("~")[4]>
-                          Details: <+repeat.item.split("~")[5]>
+                                Pipeline execution: <+pipeline.executionUrl>
+                            - name: Labels
+                              value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
+                          timeout: 5m
+                    - step:
+                        type: JiraCreate
+                        name: Create_Child_Vulnerability_Ticket
+                        identifier: Create_Child_Vulnerability_Ticket
+                        when:
+                          stageStatus: Success
+                        spec:
+                          connectorRef: cegekapocjira
+                          projectKey: <+pipeline.variables.jira_project_key>
+                          issueType: <+pipeline.variables.jira_child_issue_type>
+                          fields:
+                            - name: Reporter
+                              value: manjunath.chavan2017@gmail.com
+                            - name: Summary
+                              value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
+                            - name: Description
+                              value: |-
+                                Advisory / CVE: <+repeat.item.split("~")[0]>
+                                Severity: <+repeat.item.split("~")[1]>
+                                Package: <+repeat.item.split("~")[2]>
+                                Vulnerable range: <+repeat.item.split("~")[3]>
+                                CVSS score: <+repeat.item.split("~")[4]>
+                                Details: <+repeat.item.split("~")[5]>
 
-                          Release: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
-                      - name: Parent
-                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
-                    timeout: 5m
-                    failureStrategies:
-                      - onFailure:
-                          errors:
-                            - AllErrors
-                          action:
-                            type: MarkAsSuccess
-                  strategy:
-                    repeat:
-                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
+                                Release: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                            - name: Parent
+                              value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
+                          timeout: 5m
+                          failureStrategies:
+                            - onFailure:
+                                errors:
+                                  - AllErrors
+                                action:
+                                  type: MarkAsSuccess
+                        strategy:
+                          repeat:
+                            items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
+                            maxConcurrency: 5
