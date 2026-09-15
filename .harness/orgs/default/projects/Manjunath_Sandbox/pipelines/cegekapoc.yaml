@@ -42,6 +42,119 @@ pipeline:
                     key: cegeka-release-version
                     scope: Pipeline
                   timeout: 30m
+              - step:
+                  type: ShellScript
+                  name: Generate_Release_Version
+                  identifier: Generate_Release_Version
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
+
+                          echo "=============================================="
+                          echo "GENERATING RELEASE VERSION"
+                          echo "=============================================="
+
+                          GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
+
+                          cat > "$GIT_ASKPASS_SCRIPT" <<'EOF'
+                          #!/bin/sh
+                          case "$1" in
+                            *Username*) echo "x-access-token" ;;
+                            *Password*) echo "$GITHUB_TOKEN" ;;
+                          esac
+                          EOF
+
+                          chmod 700 "$GIT_ASKPASS_SCRIPT"
+
+                          export GIT_ASKPASS="$GIT_ASKPASS_SCRIPT"
+                          export GIT_TERMINAL_PROMPT=0
+
+                          rm -rf /tmp/cegeka-poc
+
+                          git clone \
+                            --branch "$GIT_BRANCH" \
+                            --single-branch \
+                            "$GIT_REPO_URL" \
+                            /tmp/cegeka-poc
+
+                          cd /tmp/cegeka-poc
+
+                          git fetch --tags --force
+
+                          LATEST_TAG="$(git tag --list \
+                            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                            | sort -V \
+                            | tail -1 || true)"
+
+                          if [ -z "$LATEST_TAG" ]; then
+                            NEW_TAG="v1.0.0.1"
+                          else
+                            VERSION="$(echo "$LATEST_TAG" | sed 's/^v//')"
+
+                            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+                            MINOR="$(echo "$VERSION" | cut -d. -f2)"
+                            PATCH="$(echo "$VERSION" | cut -d. -f3)"
+                            BUILD="$(echo "$VERSION" | cut -d. -f4)"
+
+                            NEXT_BUILD=$((BUILD + 1))
+
+                            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${NEXT_BUILD}"
+                          fi
+
+                          RELEASE_NAME="$(echo "$NEW_TAG" | sed 's/^v//')"
+                          COMMIT_SHA="$(git rev-parse HEAD)"
+
+                          echo "Latest tag : ${LATEST_TAG:-none}"
+                          echo "New tag    : $NEW_TAG"
+                          echo "Release    : $RELEASE_NAME"
+                          echo "Commit     : $COMMIT_SHA"
+
+                          if git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+                            echo "ERROR: Tag $NEW_TAG already exists in remote."
+                            exit 1
+                          fi
+
+                          git config user.name "Harness Release Automation"
+                          git config user.email "harness-release@harness.io"
+
+                          git tag "$NEW_TAG" "$COMMIT_SHA"
+
+                          git push origin "$NEW_TAG"
+
+                          echo "=============================================="
+                          echo "RELEASE VERSION CREATED"
+                          echo "=============================================="
+                          echo "RELEASE_NAME=$RELEASE_NAME"
+                          echo "RELEASE_TAG=$NEW_TAG"
+                          echo "COMMIT_SHA=$COMMIT_SHA"
+
+                          rm -f "$GIT_ASKPASS_SCRIPT"
+                    environmentVariables:
+                      - name: GITHUB_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka_github_pat")>
+                      - name: GIT_REPO_URL
+                        type: String
+                        value: https://github.com/manjunathy-harness/cegeka-poc.git
+                      - name: GIT_BRANCH
+                        type: String
+                        value: main
+                    outputVariables:
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+                      - name: RELEASE_TAG
+                        type: String
+                        value: NEW_TAG
+                      - name: COMMIT_SHA
+                        type: String
+                        value: COMMIT_SHA
+                  timeout: 10m
     - stage:
         name: Build_And_Scan
         identifier: Build_And_Scan
@@ -56,61 +169,6 @@ pipeline:
             spec: {}
           execution:
             steps:
-              - step:
-                  type: Run
-                  name: Generate_Release_Version
-                  identifier: Generate_Release_Version
-                  spec:
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "GENERATING RELEASE VERSION"
-                      echo "=============================================="
-
-                      git fetch --tags --force
-
-                      LATEST_TAG="$(git tag --list \
-                        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-                        | sort -V \
-                        | tail -1 || true)"
-
-                      if [ -z "$LATEST_TAG" ]; then
-                        NEW_TAG="v1.0.0.1"
-                      else
-                        VERSION="$(echo "$LATEST_TAG" | sed 's/^v//')"
-                        MAJOR="$(echo "$VERSION" | cut -d. -f1)"
-                        MINOR="$(echo "$VERSION" | cut -d. -f2)"
-                        PATCH="$(echo "$VERSION" | cut -d. -f3)"
-                        BUILD="$(echo "$VERSION" | cut -d. -f4)"
-
-                        NEXT_BUILD=$((BUILD + 1))
-                        NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${NEXT_BUILD}"
-                      fi
-
-                      RELEASE_NAME="$(echo "$NEW_TAG" | sed 's/^v//')"
-
-                      echo "Latest tag : ${LATEST_TAG:-none}"
-                      echo "New tag    : $NEW_TAG"
-                      echo "Release    : $RELEASE_NAME"
-
-                      if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-                        echo "ERROR: Tag $NEW_TAG already exists."
-                        exit 1
-                      fi
-
-                      git config user.name "Harness Release Automation"
-                      git config user.email "harness-release@harness.io"
-
-                      git tag "$NEW_TAG" "$(git rev-parse HEAD)"
-                      git push origin "$NEW_TAG"
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "RELEASE_TAG=$NEW_TAG"
-                    outputVariables:
-                      - name: RELEASE_NAME
-                      - name: RELEASE_TAG
               - step:
                   type: Run
                   name: Install_Dependencies
@@ -153,7 +211,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
@@ -190,7 +248,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                     command: |-
                       set -e
 
@@ -221,7 +279,7 @@ pipeline:
                       JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
                     command: |-
@@ -383,10 +441,10 @@ pipeline:
                             - name: Reporter
                               value: manjunath.chavan2017@gmail.com
                             - name: Summary
-                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                              value: Security scan results - <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                             - name: Description
                               value: |-
-                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
+                                Automated security scan for release <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
 
                                 Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
@@ -418,9 +476,9 @@ pipeline:
                                 CVSS score: <+repeat.item.split("~")[4]>
                                 Details: <+repeat.item.split("~")[5]>
 
-                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                                Release: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                             - name: Parent
-                              value: <+execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
+                              value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
                           timeout: 5m
                           failureStrategies:
                             - onFailure:
