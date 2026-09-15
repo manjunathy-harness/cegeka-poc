@@ -385,108 +385,123 @@ pipeline:
                       echo "PROJECT=$JIRA_PROJECT_KEY"
                       echo "RELEASE=$RELEASE_NAME"
                       echo "LABEL=$RELEASE_LABEL"
+
                       echo "=============================================="
 
                       RESPONSE_FILE="/tmp/jira-response.json"
-                      ACTIVE_RESPONSE_FILE="/tmp/jira-active-response.json"
-                      DONE_RESPONSE_FILE="/tmp/jira-done-response.json"
 
-                      echo "=============================================="
-                      echo "SEARCHING FOR ACTIVE MATCHING EPIC"
-                      echo "=============================================="
+                      SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
 
-                      ACTIVE_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" AND status != Done ORDER BY created DESC"
+                      echo "JQL=$SEARCH_JQL"
 
-                      echo "ACTIVE JQL=$ACTIVE_JQL"
+                      REQUEST_BODY="$(python3 - <<'PY'
+                      import json
+                      import os
 
-                      ACTIVE_BODY="{\"jql\":\"${ACTIVE_JQL}\",\"maxResults\":1,\"fields\":[\"summary\",\"status\",\"issuetype\",\"labels\"]}"
+                      body = {
+                          "jql": os.environ["SEARCH_JQL"],
+                          "maxResults": 100,
+                          "fields": [
+                              "summary",
+                              "status",
+                              "issuetype",
+                              "labels"
+                          ]
+                      }
 
-                      ACTIVE_HTTP_CODE="$(curl -sS \
-                        -o "$ACTIVE_RESPONSE_FILE" \
+                      print(json.dumps(body))
+                      PY
+                      )"
+
+                      HTTP_CODE="$(curl -sS \
+                        -o "$RESPONSE_FILE" \
                         -w "%{http_code}" \
                         -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
                         -X POST \
                         -H "Accept: application/json" \
                         -H "Content-Type: application/json" \
                         "${JIRA_API_BASE}/search/jql" \
-                        --data "$ACTIVE_BODY")"
+                        --data "$REQUEST_BODY")"
 
-                      echo "ACTIVE SEARCH HTTP STATUS=$ACTIVE_HTTP_CODE"
+                      echo "JIRA HTTP STATUS=$HTTP_CODE"
 
-                      if [ "$ACTIVE_HTTP_CODE" -lt 200 ] || [ "$ACTIVE_HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Active Jira search failed."
-                        cat "$ACTIVE_RESPONSE_FILE"
+                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                        echo "ERROR: Jira search failed."
+                        cat "$RESPONSE_FILE"
                         exit 1
                       fi
 
-                      ACTIVE_ISSUE_COUNT="$(grep -o '"issues":\[[^]]*' "$ACTIVE_RESPONSE_FILE" | grep -o '"key"' | wc -l | tr -d ' ')"
+                      echo "Jira search successful."
 
-                      if [ "$ACTIVE_ISSUE_COUNT" -gt 0 ]; then
-                        EPIC_EXISTS="true"
-                        EPIC_STATUS="Active"
-                        EPIC_KEY="$(sed -n 's/.*"issues":\[\{[^}]*"key":"\([^"]*\)".*/\1/p' "$ACTIVE_RESPONSE_FILE" | head -1)"
+                      export RESPONSE_FILE
+                      export RELEASE_NAME
+                      export RELEASE_LABEL
 
-                        echo "ACTIVE MATCH FOUND"
-                        echo "EPIC_EXISTS=$EPIC_EXISTS"
-                        echo "EPIC_KEY=$EPIC_KEY"
-                        echo "EPIC_STATUS=$EPIC_STATUS"
+                      MATCH_RESULT="$(python3 - <<'PY'
+                      import json
+                      import os
 
-                      else
-                        echo "NO ACTIVE MATCH FOUND"
+                      with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
+                          data = json.load(f)
 
-                        echo "=============================================="
-                        echo "SEARCHING FOR DONE MATCHING EPIC"
-                        echo "=============================================="
+                      release_name = os.environ["RELEASE_NAME"].strip().lower()
+                      release_label = os.environ["RELEASE_LABEL"].strip().lower()
 
-                        DONE_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic AND labels = \"${RELEASE_LABEL}\" AND status = Done ORDER BY created DESC"
+                      issues = data.get("issues", [])
 
-                        echo "DONE JQL=$DONE_JQL"
+                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
-                        DONE_BODY="{\"jql\":\"${DONE_JQL}\",\"maxResults\":1,\"fields\":[\"summary\",\"status\",\"issuetype\",\"labels\"]}"
+                      for issue in issues:
+                          key = issue.get("key", "")
+                          fields = issue.get("fields", {})
 
-                        DONE_HTTP_CODE="$(curl -sS \
-                          -o "$DONE_RESPONSE_FILE" \
-                          -w "%{http_code}" \
-                          -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                          -X POST \
-                          -H "Accept: application/json" \
-                          -H "Content-Type: application/json" \
-                          "${JIRA_API_BASE}/search/jql" \
-                          --data "$DONE_BODY")"
+                          summary = fields.get("summary", "") or ""
+                          status = (fields.get("status", {}) or {}).get("name", "")
+                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "")
+                          labels = fields.get("labels", []) or []
 
-                        echo "DONE SEARCH HTTP STATUS=$DONE_HTTP_CODE"
+                          if issue_type.lower() != "epic":
+                              continue
 
-                        if [ "$DONE_HTTP_CODE" -lt 200 ] || [ "$DONE_HTTP_CODE" -ge 300 ]; then
-                          echo "ERROR: Done Jira search failed."
-                          cat "$DONE_RESPONSE_FILE"
-                          exit 1
-                        fi
+                          if release_name in summary.lower():
+                              print("MATCH_FOUND_BY_RELEASE_NAME")
+                              print("EPIC_EXISTS=true")
+                              print(f"EPIC_KEY={key}")
+                              print(f"EPIC_STATUS={status}")
+                              print(f"EPIC_SUMMARY={summary}")
+                              raise SystemExit(0)
 
-                        DONE_ISSUE_COUNT="$(grep -o '"issues":\[[^]]*' "$DONE_RESPONSE_FILE" | grep -o '"key"' | wc -l | tr -d ' ')"
+                          if release_label in [str(x).lower() for x in labels]:
+                              print("MATCH_FOUND_BY_RELEASE_LABEL")
+                              print("EPIC_EXISTS=true")
+                              print(f"EPIC_KEY={key}")
+                              print(f"EPIC_STATUS={status}")
+                              print(f"EPIC_SUMMARY={summary}")
+                              raise SystemExit(0)
 
-                        if [ "$DONE_ISSUE_COUNT" -gt 0 ]; then
-                          EPIC_EXISTS="true"
-                          EPIC_STATUS="Done"
-                          EPIC_KEY="$(sed -n 's/.*"issues":\[\{[^}]*"key":"\([^"]*\)".*/\1/p' "$DONE_RESPONSE_FILE" | head -1)"
-
-                          echo "DONE MATCH FOUND"
-                          echo "EPIC_EXISTS=$EPIC_EXISTS"
-                          echo "EPIC_KEY=$EPIC_KEY"
-                          echo "EPIC_STATUS=$EPIC_STATUS"
-
-                        else
-                          EPIC_EXISTS="false"
-                          EPIC_KEY=""
-                          EPIC_STATUS=""
-
-                          echo "NO MATCHING EPIC FOUND"
-                          echo "EPIC_EXISTS=false"
-                        fi
-                      fi
+                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
+                      print("EPIC_EXISTS=false")
+                      print("EPIC_KEY=")
+                      print("EPIC_STATUS=")
+                      print("EPIC_SUMMARY=")
+                      PY
+                      )"
 
                       echo "=============================================="
                       echo "JIRA MATCH RESULT"
                       echo "=============================================="
+
+                      echo "$MATCH_RESULT"
+
+                      echo "=============================================="
+
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
+
+                      if [ -z "$EPIC_EXISTS" ]; then
+                        EPIC_EXISTS="false"
+                      fi
 
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
@@ -509,70 +524,75 @@ pipeline:
         spec:
           execution:
             steps:
-              - step:
-                  type: JiraCreate
-                  name: Create_Parent_Release_Ticket
-                  identifier: Create_Parent_Release_Ticket
+              - stepGroup:
+                  name: Create_Jira_Tickets
+                  identifier: Create_Jira_Tickets
                   when:
                     stageStatus: Success
                     condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_parent_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: Security scan results - <+pipeline.variables.release_name> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
-                      - name: Description
-                        value: |-
-                          Automated security scan for release <+pipeline.variables.release_name>.
+                  steps:
+                    - step:
+                        type: JiraCreate
+                        name: Create_Parent_Release_Ticket
+                        identifier: Create_Parent_Release_Ticket
+                        spec:
+                          connectorRef: cegekapocjira
+                          projectKey: <+pipeline.variables.jira_project_key>
+                          issueType: <+pipeline.variables.jira_parent_issue_type>
+                          fields:
+                            - name: Reporter
+                              value: manjunath.chavan2017@gmail.com
+                            - name: Summary
+                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                            - name: Description
+                              value: |-
+                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
 
-                          Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+                                Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
-                          Each vulnerability has been filed as a child ticket below.
+                                Each vulnerability has been filed as a child ticket below.
 
-                          Pipeline execution: <+pipeline.executionUrl>
-                      - name: Labels
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                    timeout: 5m
-              - step:
-                  type: JiraCreate
-                  name: Create_Child_Vulnerability_Ticket
-                  identifier: Create_Child_Vulnerability_Ticket
-                  when:
-                    stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  spec:
-                    connectorRef: cegekapocjira
-                    projectKey: <+pipeline.variables.jira_project_key>
-                    issueType: <+pipeline.variables.jira_child_issue_type>
-                    fields:
-                      - name: Reporter
-                        value: manjunath.chavan2017@gmail.com
-                      - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
-                      - name: Description
-                        value: |-
-                          Advisory / CVE: <+repeat.item.split("~")[0]>
-                          Severity: <+repeat.item.split("~")[1]>
-                          Package: <+repeat.item.split("~")[2]>
-                          Vulnerable range: <+repeat.item.split("~")[3]>
-                          CVSS score: <+repeat.item.split("~")[4]>
-                          Details: <+repeat.item.split("~")[5]>
+                                Pipeline execution: <+pipeline.executionUrl>
+                            - name: Labels
+                              value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
+                          timeout: 5m
+                    - step:
+                        type: JiraCreate
+                        name: Create_Child_Vulnerability_Ticket
+                        identifier: Create_Child_Vulnerability_Ticket
+                        when:
+                          stageStatus: Success
+                        spec:
+                          connectorRef: cegekapocjira
+                          projectKey: <+pipeline.variables.jira_project_key>
+                          issueType: <+pipeline.variables.jira_child_issue_type>
+                          fields:
+                            - name: Reporter
+                              value: manjunath.chavan2017@gmail.com
+                            - name: Summary
+                              value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
+                            - name: Description
+                              value: |-
+                                Advisory / CVE: <+repeat.item.split("~")[0]>
+                                Severity: <+repeat.item.split("~")[1]>
+                                Package: <+repeat.item.split("~")[2]>
+                                Vulnerable range: <+repeat.item.split("~")[3]>
+                                CVSS score: <+repeat.item.split("~")[4]>
+                                Details: <+repeat.item.split("~")[5]>
 
-                          Release: <+pipeline.variables.release_name>
-                      - name: Parent
-                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Parent_Release_Ticket.issue.key>
-                    timeout: 5m
-                    failureStrategies:
-                      - onFailure:
-                          errors:
-                            - AllErrors
-                          action:
-                            type: MarkAsSuccess
-                  strategy:
-                    repeat:
-                      items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                      maxConcurrency: 5
+                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+
+                                Pipeline execution: <+pipeline.executionUrl>
+                            - name: Parent
+                              value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
+                          timeout: 5m
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: MarkAsSuccess
+                      strategy:
+                        repeat:
+                          items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
+                          maxConcurrency: 5
