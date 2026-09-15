@@ -120,27 +120,6 @@ pipeline:
 
                           echo "Repository access: SUCCESS"
 
-                          echo "=============================================="
-                          echo "CONFIGURING GIT AUTHENTICATION"
-                          echo "=============================================="
-
-                          GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
-
-                          cat > "$GIT_ASKPASS_SCRIPT" <<'EOF'
-                          #!/bin/sh
-                          case "$1" in
-                            *Username*)
-                              echo "x-access-token"
-                              ;;
-                            *Password*)
-                              printf '%s\n' "$GITHUB_TOKEN"
-                              ;;
-                          esac
-                          EOF
-
-                          chmod 700 "$GIT_ASKPASS_SCRIPT"
-
-                          export GIT_ASKPASS="$GIT_ASKPASS_SCRIPT"
                           export GIT_TERMINAL_PROMPT=0
 
                           GIT_REPO_URL="https://github.com/manjunathy-harness/cegeka-poc.git"
@@ -220,12 +199,12 @@ pipeline:
 
                           echo "Tag does not exist remotely."
 
-                          git config user.name "Harness Release Automation"
-                          git config user.email "harness-release@harness.io"
-
                           echo "=============================================="
                           echo "CREATING GIT TAG"
                           echo "=============================================="
+
+                          git config user.name "Harness Release Automation"
+                          git config user.email "harness-release@harness.io"
 
                           git tag "$NEW_TAG" "$COMMIT_SHA"
 
@@ -235,7 +214,14 @@ pipeline:
                           echo "PUSHING GIT TAG"
                           echo "=============================================="
 
-                          git push origin "$NEW_TAG"
+                          git -c credential.helper='!f() { printf "username=x-access-token\n"; printf "password=%s\n" "$GITHUB_TOKEN"; }; f' \
+                            push origin "$NEW_TAG"
+
+                          echo "=============================================="
+                          echo "GIT TAG PUSH SUCCESSFUL"
+                          echo "=============================================="
+
+                          echo "Pushed tag: $NEW_TAG"
 
                           echo "=============================================="
                           echo "RELEASE VERSION CREATED SUCCESSFULLY"
@@ -246,8 +232,6 @@ pipeline:
                           echo "COMMIT_SHA=$COMMIT_SHA"
 
                           echo "=============================================="
-
-                          rm -f "$GIT_ASKPASS_SCRIPT"
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
