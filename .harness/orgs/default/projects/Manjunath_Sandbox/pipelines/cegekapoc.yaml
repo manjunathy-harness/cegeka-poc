@@ -461,46 +461,31 @@ pipeline:
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
                       for issue in issues:
-
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-
-                          status = (
-                              fields.get("status", {}) or {}
-                          ).get("name", "") or ""
-
-                          issue_type = (
-                              fields.get("issuetype", {}) or {}
-                          ).get("name", "") or ""
-
+                          status = (fields.get("status", {}) or {}).get("name", "") or ""
+                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "") or ""
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name in summary.lower():
-
                               print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
-                          if release_label in [
-                              str(x).lower()
-                              for x in labels
-                          ]:
-
+                          if release_label in [str(x).lower() for x in labels]:
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
@@ -519,23 +504,9 @@ pipeline:
 
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_EXISTS=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_KEY="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_KEY=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_STATUS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_STATUS=' |
-                        cut -d= -f2- || true
-                      )"
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
