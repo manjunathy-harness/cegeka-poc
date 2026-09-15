@@ -70,24 +70,7 @@ pipeline:
 
                           echo "JQL=$SEARCH_JQL"
 
-                          REQUEST_BODY="$(python3 - <<'PY'
-                          import json
-                          import os
-
-                          body = {
-                              "jql": os.environ["SEARCH_JQL"],
-                              "maxResults": 100,
-                              "fields": [
-                                  "summary",
-                                  "status",
-                                  "issuetype",
-                                  "labels"
-                              ]
-                          }
-
-                          print(json.dumps(body))
-                          PY
-                          )"
+                          REQUEST_BODY="{\"jql\":\"${SEARCH_JQL}\",\"maxResults\":100,\"fields\":[\"summary\",\"status\",\"issuetype\",\"labels\"]}"
 
                           echo "=============================================="
                           echo "REQUEST BODY"
@@ -130,40 +113,7 @@ pipeline:
                           echo "=============================================="
 
                           echo "=============================================="
-                          echo "EPICS FOUND"
+                          echo "TEST COMPLETED"
                           echo "=============================================="
-
-                          python3 - <<'PY'
-                          import json
-
-                          with open("/tmp/jira-search-response.json") as f:
-                              data = json.load(f)
-
-                          issues = data.get("issues", [])
-
-                          print("TOTAL EPICS FOUND:", len(issues))
-                          print("")
-
-                          for issue in issues:
-                              fields = issue.get("fields", {})
-                              summary = fields.get("summary", "")
-                              status = fields.get("status", {}).get("name", "")
-                              labels = fields.get("labels", [])
-
-                              print("----------------------------------------------")
-                              print("KEY    :", issue.get("key"))
-                              print("SUMMARY:", summary)
-                              print("STATUS :", status)
-                              print("LABELS :", ", ".join(labels))
-                              print("----------------------------------------------")
-                          PY
-
-                          echo ""
-                          echo "=============================================="
-                          echo "JIRA SEARCH TEST COMPLETED SUCCESSFULLY"
-                          echo "=============================================="
-                    environmentVariables:
-                      - name: SEARCH_JQL
-                        type: String
-                        value: project = SCRUM AND issuetype = Epic ORDER BY created DESC
+                    environmentVariables: []
                     outputVariables: []
