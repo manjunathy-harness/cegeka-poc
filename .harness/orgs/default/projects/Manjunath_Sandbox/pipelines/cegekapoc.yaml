@@ -228,8 +228,8 @@ pipeline:
                           echo "RELEASE GENERATION COMPLETE"
                           echo "=============================================="
 
-                          echo "RELEASE_NAME=${RELEASE_NAME}" >> /tmp/engine/wc7IVB1GSq65RFs-output.env
-                          echo "RELEASE_TAG=${NEW_TAG}" >> /tmp/engine/wc7IVB1GSq65RFs-output.env
+                          export RELEASE_NAME
+                          export RELEASE_TAG="$NEW_TAG"
                     environmentVariables: []
                     outputVariables:
                       - name: RELEASE_NAME
@@ -286,7 +286,9 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm audit --json > /harness/npm-audit.json || true
+
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -339,7 +341,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
                     command: |-
                       set -e
 
@@ -497,6 +499,10 @@ pipeline:
                       echo "EPIC_EXISTS=$EPIC_EXISTS"
                       echo "EPIC_KEY=$EPIC_KEY"
                       echo "EPIC_STATUS=$EPIC_STATUS"
+
+                      export EPIC_EXISTS
+                      export EPIC_KEY
+                      export EPIC_STATUS
                     outputVariables:
                       - name: EPIC_EXISTS
                       - name: EPIC_KEY
@@ -547,6 +553,8 @@ pipeline:
                         type: JiraCreate
                         name: Create_Child_Vulnerability_Ticket
                         identifier: Create_Child_Vulnerability_Ticket
+                        when:
+                          stageStatus: Success
                         spec:
                           connectorRef: cegekapocjira
                           projectKey: <+pipeline.variables.jira_project_key>
