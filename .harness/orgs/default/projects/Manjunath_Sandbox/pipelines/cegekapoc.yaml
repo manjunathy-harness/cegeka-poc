@@ -26,10 +26,6 @@ pipeline:
       type: String
       required: false
       value: low
-    - name: github_token
-      type: Secret
-      required: false
-      value: cegeka_github_pat
   stages:
     - stage:
         name: Release_Queue
@@ -66,8 +62,6 @@ pipeline:
                           REPO="cegeka-poc"
                           BRANCH="main"
 
-                          GITHUB_TOKEN="<+pipeline.variables.github_token>"
-
                           echo "GitHub User: ${GITHUB_USER}"
                           echo "Repository: ${GITHUB_USER}/${REPO}"
                           echo "Branch: ${BRANCH}"
@@ -79,7 +73,6 @@ pipeline:
                           TOKEN_LENGTH="${#GITHUB_TOKEN}"
 
                           echo "Token length: ${TOKEN_LENGTH}"
-                          echo "Token prefix: ${GITHUB_TOKEN:0:11}"
 
                           GITHUB_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_user.json \
@@ -226,7 +219,10 @@ pipeline:
 
                           export RELEASE_NAME
                           export RELEASE_TAG="$NEW_TAG"
-                    environmentVariables: []
+                    environmentVariables:
+                      - name: GITHUB_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka_github_pat")>
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
@@ -282,9 +278,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm audit --json > /harness/npm-audit.json || true
-
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -317,13 +311,7 @@ pipeline:
                         $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
 
-                      echo "=============================================="
-                      echo "Contents of vuln_vars.env"
-                      echo "=============================================="
-
                       cat /harness/vuln_vars.env
-
-                      echo "=============================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
@@ -462,46 +450,31 @@ pipeline:
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
                       for issue in issues:
-
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-
-                          status = (
-                              fields.get("status", {}) or {}
-                          ).get("name", "") or ""
-
-                          issue_type = (
-                              fields.get("issuetype", {}) or {}
-                          ).get("name", "") or ""
-
+                          status = (fields.get("status", {}) or {}).get("name", "")
+                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "")
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name in summary.lower():
-
                               print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
-                          if release_label in [
-                              str(x).lower()
-                              for x in labels
-                          ]:
-
+                          if release_label in [str(x).lower() for x in labels]:
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
@@ -520,23 +493,9 @@ pipeline:
 
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_EXISTS=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_KEY="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_KEY=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_STATUS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_STATUS=' |
-                        cut -d= -f2- || true
-                      )"
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
@@ -594,7 +553,7 @@ pipeline:
                                 Pipeline execution: <+pipeline.executionUrl>
                             - name: Labels
                               value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                        timeout: 5m
+                          timeout: 5m
                     - step:
                         type: JiraCreate
                         name: Create_Child_Vulnerability_Ticket
@@ -619,7 +578,9 @@ pipeline:
                                 CVSS score: <+repeat.item.split("~")[4]>
                                 Details: <+repeat.item.split("~")[5]>
 
-                                Release: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+
+                                Pipeline execution: <+pipeline.executionUrl>
                             - name: Parent
                               value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
                           timeout: 5m
