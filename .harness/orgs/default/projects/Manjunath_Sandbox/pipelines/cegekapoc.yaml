@@ -9,6 +9,11 @@ pipeline:
       codebase:
         connectorRef: cegekapoc
         build: <+input>
+  variables:
+    - name: github_token
+      type: Secret
+      required: true
+      value: <+input>
   stages:
     - stage:
         name: Release_Queue
@@ -42,7 +47,7 @@ pipeline:
                           echo "GITHUB SECRET TEST"
                           echo "=============================================="
 
-                          GITHUB_TOKEN='<+secrets.getValue("cegeka_github_pat")>'
+                          GITHUB_TOKEN="<+pipeline.variables.github_token>"
 
                           if [ -z "$GITHUB_TOKEN" ]; then
                             echo "ERROR: GITHUB_TOKEN is EMPTY"
@@ -51,11 +56,9 @@ pipeline:
 
                           TOKEN_LENGTH="$(printf '%s' "$GITHUB_TOKEN" | wc -c | tr -d ' ')"
                           TOKEN_PREFIX="$(printf '%s' "$GITHUB_TOKEN" | cut -c1-11)"
-                          TOKEN_SUFFIX="$(printf '%s' "$GITHUB_TOKEN" | tail -c 7)"
 
                           echo "Token length: $TOKEN_LENGTH"
                           echo "Token prefix: $TOKEN_PREFIX"
-                          echo "Token suffix: $TOKEN_SUFFIX"
 
                           echo "=============================================="
                           echo "TESTING GITHUB AUTHENTICATION"
