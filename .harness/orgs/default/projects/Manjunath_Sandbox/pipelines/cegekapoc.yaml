@@ -28,8 +28,8 @@ pipeline:
       value: low
     - name: github_token
       type: Secret
-      required: true
-      value: <+input>
+      required: false
+      value: cegeka_github_pat
   stages:
     - stage:
         name: Release_Queue
@@ -282,7 +282,9 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm audit --json > /harness/npm-audit.json || true
+
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -295,6 +297,13 @@ pipeline:
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
+
+                      echo "=============================================="
+                      echo "PARSING VULNERABILITIES"
+                      echo "=============================================="
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "MIN_SEVERITY=$MIN_SEVERITY"
 
                       SEVERITY_FLAG=""
 
@@ -453,31 +462,46 @@ pipeline:
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
                       for issue in issues:
+
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-                          status = (fields.get("status", {}) or {}).get("name", "")
-                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "")
+
+                          status = (
+                              fields.get("status", {}) or {}
+                          ).get("name", "") or ""
+
+                          issue_type = (
+                              fields.get("issuetype", {}) or {}
+                          ).get("name", "") or ""
+
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name in summary.lower():
+
                               print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
+
                               raise SystemExit(0)
 
-                          if release_label in [str(x).lower() for x in labels]:
+                          if release_label in [
+                              str(x).lower()
+                              for x in labels
+                          ]:
+
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
+
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
@@ -496,9 +520,23 @@ pipeline:
 
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
-                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
-                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
+                      export EPIC_EXISTS="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_EXISTS=' |
+                        cut -d= -f2- || true
+                      )"
+
+                      export EPIC_KEY="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_KEY=' |
+                        cut -d= -f2- || true
+                      )"
+
+                      export EPIC_STATUS="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_STATUS=' |
+                        cut -d= -f2- || true
+                      )"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
@@ -544,10 +582,10 @@ pipeline:
                             - name: Reporter
                               value: manjunath.chavan2017@gmail.com
                             - name: Summary
-                              value: Security scan results - <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                             - name: Description
                               value: |-
-                                Automated security scan for release <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>.
+                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
 
                                 Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
@@ -556,7 +594,7 @@ pipeline:
                                 Pipeline execution: <+pipeline.executionUrl>
                             - name: Labels
                               value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                          timeout: 5m
+                        timeout: 5m
                     - step:
                         type: JiraCreate
                         name: Create_Child_Vulnerability_Ticket
