@@ -59,9 +59,6 @@ pipeline:
                           echo "GENERATING RELEASE VERSION"
                           echo "=============================================="
 
-                          # --------------------------------------------------
-                          # Check Harness secret
-                          # --------------------------------------------------
                           echo "Checking Harness GitHub secret..."
 
                           if [ -z "$GITHUB_TOKEN" ]; then
@@ -70,49 +67,29 @@ pipeline:
                             exit 1
                           fi
 
+                          RAW_TOKEN_LENGTH="$(printf '%s' "$GITHUB_TOKEN" | wc -c | tr -d ' ')"
+
+                          echo "Raw token length: $RAW_TOKEN_LENGTH"
+
+                          GITHUB_TOKEN="$(printf '%s' "$GITHUB_TOKEN" | tr -d '\r\n')"
+
+                          GITHUB_TOKEN="${GITHUB_TOKEN#\"}"
+                          GITHUB_TOKEN="${GITHUB_TOKEN%\"}"
+
+                          GITHUB_TOKEN="${GITHUB_TOKEN#\'}"
+                          GITHUB_TOKEN="${GITHUB_TOKEN%\'}"
+
+                          export GITHUB_TOKEN
+
                           TOKEN_LENGTH="$(printf '%s' "$GITHUB_TOKEN" | wc -c | tr -d ' ')"
 
-                          echo "Token length: $TOKEN_LENGTH"
+                          echo "Normalized token length: $TOKEN_LENGTH"
 
-                          case "$GITHUB_TOKEN" in
-                            github_pat_*)
-                              echo "Token format: github_pat_ detected"
-                              ;;
-                            ghp_*)
-                              echo "Token format: classic PAT detected"
-                              ;;
-                            *)
-                              echo "ERROR: Unexpected GitHub token format."
-                              echo "Expected github_pat_ or ghp_ token."
-                              exit 1
-                              ;;
-                          esac
+                          if [ "$TOKEN_LENGTH" -eq 0 ]; then
+                            echo "ERROR: GitHub token is empty after normalization."
+                            exit 1
+                          fi
 
-                          # --------------------------------------------------
-                          # GitHub authentication helper
-                          # --------------------------------------------------
-                          GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
-
-                          cat > "$GIT_ASKPASS_SCRIPT" <<'EOF'
-                          #!/bin/sh
-                          case "$1" in
-                            *Username*)
-                              echo "x-access-token"
-                              ;;
-                            *Password*)
-                              echo "$GITHUB_TOKEN"
-                              ;;
-                          esac
-                          EOF
-
-                          chmod 700 "$GIT_ASKPASS_SCRIPT"
-
-                          export GIT_ASKPASS="$GIT_ASKPASS_SCRIPT"
-                          export GIT_TERMINAL_PROMPT=0
-
-                          # --------------------------------------------------
-                          # Validate GitHub token
-                          # --------------------------------------------------
                           echo "Checking GitHub token authentication..."
 
                           GITHUB_HTTP_CODE="$(curl -sS \
@@ -125,17 +102,16 @@ pipeline:
                           echo "GitHub token HTTP status: $GITHUB_HTTP_CODE"
 
                           if [ "$GITHUB_HTTP_CODE" != "200" ]; then
-                            echo "ERROR: GitHub token authentication failed."
+                            echo "ERROR: GitHub rejected the token."
                             echo "Check Harness secret: cegeka_github_pat"
+                            echo ""
+                            echo "GitHub response:"
                             cat /tmp/github-user.json
                             exit 1
                           fi
 
                           echo "GitHub token authentication: SUCCESS"
 
-                          # --------------------------------------------------
-                          # Validate repository access
-                          # --------------------------------------------------
                           echo "Checking GitHub repository access..."
 
                           REPO_HTTP_CODE="$(curl -sS \
@@ -155,9 +131,25 @@ pipeline:
 
                           echo "GitHub repository access: SUCCESS"
 
-                          # --------------------------------------------------
-                          # Clone repository
-                          # --------------------------------------------------
+                          GIT_ASKPASS_SCRIPT="/tmp/git-askpass.sh"
+
+                          cat > "$GIT_ASKPASS_SCRIPT" <<'EOF'
+                          #!/bin/sh
+                          case "$1" in
+                            *Username*)
+                              echo "x-access-token"
+                              ;;
+                            *Password*)
+                              printf '%s\n' "$GITHUB_TOKEN"
+                              ;;
+                          esac
+                          EOF
+
+                          chmod 700 "$GIT_ASKPASS_SCRIPT"
+
+                          export GIT_ASKPASS="$GIT_ASKPASS_SCRIPT"
+                          export GIT_TERMINAL_PROMPT=0
+
                           echo "Cloning repository..."
 
                           rm -rf /tmp/cegeka-poc
@@ -170,28 +162,15 @@ pipeline:
 
                           cd /tmp/cegeka-poc
 
-                          # --------------------------------------------------
-                          # Fetch tags
-                          # --------------------------------------------------
                           echo "Fetching Git tags..."
 
                           git fetch --tags --force
 
-                          # --------------------------------------------------
-                          # Find latest release tag
-                          # Format:
-                          # v1.0.0.1
-                          # v1.0.0.2
-                          # v1.0.0.3
-                          # --------------------------------------------------
                           LATEST_TAG="$(git tag --list \
                             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
                             | sort -V \
                             | tail -1 || true)"
 
-                          # --------------------------------------------------
-                          # Generate next release tag
-                          # --------------------------------------------------
                           if [ -z "$LATEST_TAG" ]; then
                             NEW_TAG="v1.0.0.1"
                           else
@@ -220,37 +199,24 @@ pipeline:
                           echo "Commit     : $COMMIT_SHA"
                           echo "=============================================="
 
-                          # --------------------------------------------------
-                          # Check whether tag already exists remotely
-                          # --------------------------------------------------
                           if git ls-remote \
                             --exit-code \
                             --tags \
                             origin \
                             "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
-
                             echo "ERROR: Tag $NEW_TAG already exists in remote."
                             exit 1
                           fi
 
-                          # --------------------------------------------------
-                          # Configure Git
-                          # --------------------------------------------------
                           git config user.name "Harness Release Automation"
                           git config user.email "harness-release@harness.io"
 
-                          # --------------------------------------------------
-                          # Create tag
-                          # --------------------------------------------------
                           echo "Creating Git tag..."
 
                           git tag "$NEW_TAG" "$COMMIT_SHA"
 
                           echo "Git tag created locally: $NEW_TAG"
 
-                          # --------------------------------------------------
-                          # Push tag
-                          # --------------------------------------------------
                           echo "Pushing tag to GitHub..."
 
                           git push origin "$NEW_TAG"
@@ -258,9 +224,11 @@ pipeline:
                           echo "=============================================="
                           echo "RELEASE VERSION CREATED"
                           echo "=============================================="
+
                           echo "RELEASE_NAME=$RELEASE_NAME"
                           echo "RELEASE_TAG=$NEW_TAG"
                           echo "COMMIT_SHA=$COMMIT_SHA"
+
                           echo "=============================================="
 
                           rm -f "$GIT_ASKPASS_SCRIPT"
@@ -361,9 +329,7 @@ pipeline:
                       cat /harness/vuln_vars.env
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
-
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-
                       export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
@@ -541,23 +507,9 @@ pipeline:
                       echo "$MATCH_RESULT"
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_EXISTS=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_KEY="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_KEY=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_STATUS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_STATUS=' |
-                        cut -d= -f2- || true
-                      )"
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
