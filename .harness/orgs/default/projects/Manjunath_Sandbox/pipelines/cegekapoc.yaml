@@ -98,11 +98,7 @@ pipeline:
 
                           echo "GitHub authentication: SUCCESS"
 
-                          GITHUB_LOGIN="$(python3 -c '
-                          import json
-                          with open("/tmp/github_user.json") as f:
-                              print(json.load(f).get("login", ""))
-                          ')"
+                          GITHUB_LOGIN="$(sed -n 's/.*"login":"\([^"]*\)".*/\1/p' /tmp/github_user.json | head -1)"
 
                           echo "GitHub user: ${GITHUB_LOGIN}"
 
@@ -394,6 +390,8 @@ pipeline:
 
                       echo "JQL=$SEARCH_JQL"
 
+                      export SEARCH_JQL
+
                       REQUEST_BODY="$(python3 - <<'PY'
                       import json
                       import os
@@ -412,6 +410,10 @@ pipeline:
                       print(json.dumps(body))
                       PY
                       )"
+
+                      echo "=============================================="
+                      echo "SEARCHING JIRA"
+                      echo "=============================================="
 
                       HTTP_CODE="$(curl -sS \
                         -o "$RESPONSE_FILE" \
@@ -433,6 +435,10 @@ pipeline:
 
                       echo "Jira search successful."
 
+                      echo "=============================================="
+                      echo "SEARCHING FOR EXISTING RELEASE EPIC"
+                      echo "=============================================="
+
                       export RESPONSE_FILE
                       export RELEASE_NAME
                       export RELEASE_LABEL
@@ -441,11 +447,12 @@ pipeline:
                       import json
                       import os
 
-                      with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
-                          data = json.load(f)
-
+                      response_file = os.environ["RESPONSE_FILE"]
                       release_name = os.environ["RELEASE_NAME"].strip().lower()
                       release_label = os.environ["RELEASE_LABEL"].strip().lower()
+
+                      with open(response_file, "r", encoding="utf-8") as f:
+                          data = json.load(f)
 
                       issues = data.get("issues", [])
 
@@ -456,12 +463,25 @@ pipeline:
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-                          status = (fields.get("status", {}) or {}).get("name", "")
-                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "")
+                          status = (fields.get("status") or {}).get("name", "") or ""
+                          issue_type = (fields.get("issuetype") or {}).get("name", "") or ""
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
+
+                          normalized_labels = [
+                              str(label).strip().lower()
+                              for label in labels
+                          ]
+
+                          if release_label in normalized_labels:
+                              print("MATCH_FOUND_BY_RELEASE_LABEL")
+                              print("EPIC_EXISTS=true")
+                              print(f"EPIC_KEY={key}")
+                              print(f"EPIC_STATUS={status}")
+                              print(f"EPIC_SUMMARY={summary}")
+                              break
 
                           if release_name in summary.lower():
                               print("MATCH_FOUND_BY_RELEASE_NAME")
@@ -469,21 +489,13 @@ pipeline:
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-                              raise SystemExit(0)
-
-                          if release_label in [str(x).lower() for x in labels]:
-                              print("MATCH_FOUND_BY_RELEASE_LABEL")
-                              print("EPIC_EXISTS=true")
-                              print(f"EPIC_KEY={key}")
-                              print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
-                              raise SystemExit(0)
-
-                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
-                      print("EPIC_EXISTS=false")
-                      print("EPIC_KEY=")
-                      print("EPIC_STATUS=")
-                      print("EPIC_SUMMARY=")
+                              break
+                      else:
+                          print("NO_MATCHING_RELEASE_EPIC_FOUND")
+                          print("EPIC_EXISTS=false")
+                          print("EPIC_KEY=")
+                          print("EPIC_STATUS=")
+                          print("EPIC_SUMMARY=")
                       PY
                       )"
 
