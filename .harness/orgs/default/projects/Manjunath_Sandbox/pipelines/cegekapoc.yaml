@@ -26,10 +26,6 @@ pipeline:
       type: String
       required: false
       value: low
-    - name: github_token
-      type: Secret
-      required: true
-      value: <+input>
   stages:
     - stage:
         name: Release_Queue
@@ -66,8 +62,6 @@ pipeline:
                           REPO="cegeka-poc"
                           BRANCH="main"
 
-                          GITHUB_TOKEN="<+pipeline.variables.github_token>"
-
                           echo "GitHub User: ${GITHUB_USER}"
                           echo "Repository: ${GITHUB_USER}/${REPO}"
                           echo "Branch: ${BRANCH}"
@@ -76,14 +70,10 @@ pipeline:
                           echo "VALIDATING GITHUB TOKEN"
                           echo "=============================================="
 
-                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
-
-                          echo "Token length: ${TOKEN_LENGTH}"
-
                           GITHUB_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_user.json \
                             -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Authorization: Bearer <+secrets.getValue("cegeka_github_pat")>" \
                             -H "Accept: application/vnd.github+json" \
                             https://api.github.com/user)"
 
@@ -108,7 +98,7 @@ pipeline:
                           REPO_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_repo.json \
                             -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Authorization: Bearer <+secrets.getValue("cegeka_github_pat")>" \
                             -H "Accept: application/vnd.github+json" \
                             "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
 
@@ -198,9 +188,7 @@ pipeline:
 
                           rm -f "$GIT_CREDENTIAL_FILE"
 
-                          printf 'https://%s:%s@github.com\n' \
-                            "$GITHUB_USER" \
-                            "$GITHUB_TOKEN" \
+                          printf 'https://manjunathy-harness:<+secrets.getValue("cegeka_github_pat")>@github.com\n' \
                             > "$GIT_CREDENTIAL_FILE"
 
                           chmod 600 "$GIT_CREDENTIAL_FILE"
@@ -461,31 +449,46 @@ pipeline:
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
                       for issue in issues:
+
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-                          status = (fields.get("status", {}) or {}).get("name", "") or ""
-                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "") or ""
+
+                          status = (
+                              fields.get("status", {}) or {}
+                          ).get("name", "") or ""
+
+                          issue_type = (
+                              fields.get("issuetype", {}) or {}
+                          ).get("name", "") or ""
+
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name in summary.lower():
+
                               print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
+
                               raise SystemExit(0)
 
-                          if release_label in [str(x).lower() for x in labels]:
+                          if release_label in [
+                              str(x).lower()
+                              for x in labels
+                          ]:
+
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
+
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
@@ -504,9 +507,23 @@ pipeline:
 
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
-                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
-                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
+                      export EPIC_EXISTS="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_EXISTS=' |
+                        cut -d= -f2- || true
+                      )"
+
+                      export EPIC_KEY="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_KEY=' |
+                        cut -d= -f2- || true
+                      )"
+
+                      export EPIC_STATUS="$(
+                        echo "$MATCH_RESULT" |
+                        grep '^EPIC_STATUS=' |
+                        cut -d= -f2- || true
+                      )"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
