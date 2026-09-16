@@ -229,7 +229,7 @@ pipeline:
                     environmentVariables:
                       - name: GITHUB_TOKEN
                         type: Secret
-                        value: cegeka_github_pat
+                        value: cegeka-poc2
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
