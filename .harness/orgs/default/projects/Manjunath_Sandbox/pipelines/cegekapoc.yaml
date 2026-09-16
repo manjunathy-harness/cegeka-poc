@@ -76,8 +76,10 @@ pipeline:
                           fi
 
                           TOKEN_LENGTH="${#GITHUB_TOKEN}"
+                          TOKEN_SHA256="$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')"
 
                           echo "Token length: ${TOKEN_LENGTH}"
+                          echo "Token SHA256: ${TOKEN_SHA256}"
 
                           GITHUB_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_user.json \
