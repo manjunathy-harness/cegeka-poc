@@ -70,10 +70,19 @@ pipeline:
                           echo "VALIDATING GITHUB TOKEN"
                           echo "=============================================="
 
+                          if [ -z "$GITHUB_TOKEN" ]; then
+                            echo "ERROR: GITHUB_TOKEN was not injected."
+                            exit 1
+                          fi
+
+                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
+
+                          echo "Token length: ${TOKEN_LENGTH}"
+
                           GITHUB_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_user.json \
                             -w "%{http_code}" \
-                            -H "Authorization: Bearer <+secrets.getValue("cegeka_github_pat")>" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             https://api.github.com/user)"
 
@@ -98,7 +107,7 @@ pipeline:
                           REPO_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_repo.json \
                             -w "%{http_code}" \
-                            -H "Authorization: Bearer <+secrets.getValue("cegeka_github_pat")>" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
 
@@ -188,7 +197,9 @@ pipeline:
 
                           rm -f "$GIT_CREDENTIAL_FILE"
 
-                          printf 'https://manjunathy-harness:<+secrets.getValue("cegeka_github_pat")>@github.com\n' \
+                          printf 'https://%s:%s@github.com\n' \
+                            "$GITHUB_USER" \
+                            "$GITHUB_TOKEN" \
                             > "$GIT_CREDENTIAL_FILE"
 
                           chmod 600 "$GIT_CREDENTIAL_FILE"
@@ -213,7 +224,10 @@ pipeline:
 
                           export RELEASE_NAME
                           export RELEASE_TAG="$NEW_TAG"
-                    environmentVariables: []
+                    environmentVariables:
+                      - name: GITHUB_TOKEN
+                        type: Secret
+                        value: cegeka_github_pat
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
@@ -269,9 +283,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm audit --json > /harness/npm-audit.json || true
-
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -304,13 +316,7 @@ pipeline:
                         $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
 
-                      echo "=============================================="
-                      echo "Contents of vuln_vars.env"
-                      echo "=============================================="
-
                       cat /harness/vuln_vars.env
-
-                      echo "=============================================="
 
                       export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
                       export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
@@ -449,46 +455,31 @@ pipeline:
                       print(f"TOTAL_EPICS_RETURNED={len(issues)}")
 
                       for issue in issues:
-
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
 
                           summary = fields.get("summary", "") or ""
-
-                          status = (
-                              fields.get("status", {}) or {}
-                          ).get("name", "") or ""
-
-                          issue_type = (
-                              fields.get("issuetype", {}) or {}
-                          ).get("name", "") or ""
-
+                          status = (fields.get("status", {}) or {}).get("name", "") or ""
+                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "") or ""
                           labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name in summary.lower():
-
                               print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
-                          if release_label in [
-                              str(x).lower()
-                              for x in labels
-                          ]:
-
+                          if release_label in [str(x).lower() for x in labels]:
                               print("MATCH_FOUND_BY_RELEASE_LABEL")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
                               print(f"EPIC_SUMMARY={summary}")
-
                               raise SystemExit(0)
 
                       print("NO_MATCHING_RELEASE_EPIC_FOUND")
@@ -507,23 +498,9 @@ pipeline:
 
                       echo "=============================================="
 
-                      export EPIC_EXISTS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_EXISTS=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_KEY="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_KEY=' |
-                        cut -d= -f2- || true
-                      )"
-
-                      export EPIC_STATUS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_STATUS=' |
-                        cut -d= -f2- || true
-                      )"
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
