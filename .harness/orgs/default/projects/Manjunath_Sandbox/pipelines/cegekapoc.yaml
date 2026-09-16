@@ -492,10 +492,7 @@ pipeline:
 
                       echo "=============================================="
                       echo "MATCH RESULT"
-                      echo "=============================================="
-
                       echo "$MATCH_RESULT"
-
                       echo "=============================================="
 
                       export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
