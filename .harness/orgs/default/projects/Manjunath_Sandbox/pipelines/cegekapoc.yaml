@@ -8,23 +8,8 @@ pipeline:
     ci:
       codebase:
         connectorRef: cegekapoc
-        build:
-          type: branch
-          spec:
-            branch: <+input>
+        build: <+input>
   variables:
-    - name: execution_mode
-      type: String
-      required: true
-      value: <+input>.allowedValues(AUTO,MANUAL)
-    - name: branch_name
-      type: String
-      required: false
-      value: <+input>
-    - name: jira_epic_key
-      type: String
-      required: false
-      value: <+input>
     - name: jira_project_key
       type: String
       required: false
@@ -81,23 +66,24 @@ pipeline:
                           echo "Repository: ${GITHUB_USER}/${REPO}"
                           echo "Branch: ${BRANCH}"
 
-                          # ------------------------------------------------
-                          # GITHUB AUTHENTICATION
-                          # ------------------------------------------------
+                          echo "=============================================="
+                          echo "VALIDATING GITHUB TOKEN"
+                          echo "=============================================="
 
                           if [ -z "$GITHUB_TOKEN" ]; then
                             echo "ERROR: GITHUB_TOKEN was not injected."
                             exit 1
                           fi
 
-                          echo "Validating GitHub authentication..."
-
-                          GITHUB_HTTP_STATUS="$(curl -sS \
-                            -o /tmp/github_user.json \
-                            -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            https://api.github.com/user)"
+                          GITHUB_HTTP_STATUS="$(
+                            curl -sS \
+                              -o /tmp/github_user.json \
+                              -w "%{http_code}" \
+                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                              -H "Accept: application/vnd.github+json" \
+                              -H "X-GitHub-Api-Version: 2022-11-28" \
+                              https://api.github.com/user
+                          )"
 
                           echo "GitHub HTTP status: ${GITHUB_HTTP_STATUS}"
 
@@ -109,30 +95,27 @@ pipeline:
 
                           echo "GitHub authentication: SUCCESS"
 
-                          GITHUB_LOGIN="$(python3 - <<'PY'
-                          import json
-
-                          with open("/tmp/github_user.json", "r") as f:
-                              data = json.load(f)
-
-                          print(data.get("login", ""))
-                          PY
+                          GITHUB_LOGIN="$(
+                            sed -n 's/.*"login":"\([^"]*\)".*/\1/p' \
+                            /tmp/github_user.json |
+                            head -1
                           )"
 
                           echo "GitHub user: ${GITHUB_LOGIN}"
 
-                          # ------------------------------------------------
-                          # REPOSITORY ACCESS
-                          # ------------------------------------------------
+                          echo "=============================================="
+                          echo "VALIDATING REPOSITORY ACCESS"
+                          echo "=============================================="
 
-                          echo "Validating repository access..."
-
-                          REPO_HTTP_STATUS="$(curl -sS \
-                            -o /tmp/github_repo.json \
-                            -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
+                          REPO_HTTP_STATUS="$(
+                            curl -sS \
+                              -o /tmp/github_repo.json \
+                              -w "%{http_code}" \
+                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                              -H "Accept: application/vnd.github+json" \
+                              -H "X-GitHub-Api-Version: 2022-11-28" \
+                              "https://api.github.com/repos/${GITHUB_USER}/${REPO}"
+                          )"
 
                           echo "Repository HTTP status: ${REPO_HTTP_STATUS}"
 
@@ -144,9 +127,9 @@ pipeline:
 
                           echo "REPOSITORY ACCESS SUCCESS"
 
-                          # ------------------------------------------------
-                          # CLONE
-                          # ------------------------------------------------
+                          echo "=============================================="
+                          echo "CLONING REPOSITORY"
+                          echo "=============================================="
 
                           WORK_DIR="/tmp/cegeka-release"
 
@@ -161,11 +144,9 @@ pipeline:
 
                           git fetch --tags --force origin
 
-                          # ------------------------------------------------
-                          # FIND LATEST RELEASE TAG
-                          # ------------------------------------------------
-
-                          echo "Existing release tags:"
+                          echo "=============================================="
+                          echo "EXISTING RELEASE TAGS"
+                          echo "=============================================="
 
                           git tag -l |
                             grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
@@ -177,10 +158,6 @@ pipeline:
                             sort -V |
                             tail -1
                           )"
-
-                          # ------------------------------------------------
-                          # GENERATE NEW TAG
-                          # ------------------------------------------------
 
                           if [ -z "$LATEST_TAG" ]; then
 
@@ -211,9 +188,9 @@ pipeline:
                           echo "New tag    : ${NEW_TAG}"
                           echo "Release    : ${RELEASE_NAME}"
 
-                          # ------------------------------------------------
-                          # CREATE TAG
-                          # ------------------------------------------------
+                          echo "=============================================="
+                          echo "CREATING GIT TAG"
+                          echo "=============================================="
 
                           git config user.name "Harness Release Automation"
                           git config user.email "harness-release@harness.io"
@@ -222,9 +199,9 @@ pipeline:
 
                           echo "Local tag created: ${NEW_TAG}"
 
-                          # ------------------------------------------------
-                          # PUSH TAG
-                          # ------------------------------------------------
+                          echo "=============================================="
+                          echo "PUSHING TAG TO GITHUB"
+                          echo "=============================================="
 
                           GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
 
@@ -244,15 +221,17 @@ pipeline:
 
                           echo "Git tag pushed successfully: ${NEW_TAG}"
 
-                          # ------------------------------------------------
-                          # VERIFY TAG
-                          # ------------------------------------------------
+                          echo "=============================================="
+                          echo "VERIFYING REMOTE TAG"
+                          echo "=============================================="
 
                           git ls-remote --tags origin "$NEW_TAG"
 
                           rm -f "$GIT_CREDENTIAL_FILE"
 
+                          echo "=============================================="
                           echo "RELEASE GENERATION COMPLETE"
+                          echo "=============================================="
 
                           export RELEASE_NAME
                           export RELEASE_TAG="$NEW_TAG"
@@ -284,35 +263,11 @@ pipeline:
             steps:
               - step:
                   type: Run
-                  name: Show_Execution_Context
-                  identifier: Show_Execution_Context
-                  spec:
-                    shell: Sh
-                    command: |-
-                      echo "=============================================="
-                      echo "CEGEKA EXECUTION CONTEXT"
-                      echo "=============================================="
-
-                      echo "Execution Mode:"
-                      echo "<+pipeline.variables.execution_mode>"
-
-                      echo "Jira Epic:"
-                      echo "<+pipeline.variables.jira_epic_key>"
-
-                      echo "Requested Branch:"
-                      echo "<+pipeline.variables.branch_name>"
-
-                      echo "Actual Codebase Branch:"
-                      echo "<+codebase.branch>"
-              - step:
-                  type: Run
                   name: Install_Dependencies
                   identifier: Install_Dependencies
                   spec:
                     shell: Sh
                     command: |-
-                      set -e
-
                       cd sample-app
 
                       npm install --package-lock-only
@@ -342,10 +297,6 @@ pipeline:
                       cd sample-app
 
                       npm audit --json > /harness/npm-audit.json || true
-
-                      echo "=============================================="
-                      echo "NPM AUDIT RESULT"
-                      echo "=============================================="
 
                       cat /harness/npm-audit.json
               - step:
@@ -452,10 +403,6 @@ pipeline:
                     command: |-
                       set -e
 
-                      echo "=============================================="
-                      echo "JIRA EPIC LOOKUP"
-                      echo "=============================================="
-
                       RESPONSE_FILE="/tmp/jira-response.json"
 
                       export SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
@@ -495,12 +442,9 @@ pipeline:
                       echo "JIRA HTTP STATUS=$HTTP_CODE"
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed."
                         cat "$RESPONSE_FILE"
                         exit 1
                       fi
-
-                      echo "Jira search successful."
 
                       export RESPONSE_FILE
                       export RELEASE_NAME
@@ -531,10 +475,6 @@ pipeline:
                       )
 
                       issues = data.get("issues", [])
-
-                      print(
-                          f"TOTAL_EPICS_RETURNED={len(issues)}"
-                      )
 
                       for issue in issues:
 
@@ -584,10 +524,6 @@ pipeline:
 
                           if release_name in summary.lower():
 
-                              print(
-                                  "MATCH_FOUND_BY_RELEASE_NAME"
-                              )
-
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
@@ -599,27 +535,19 @@ pipeline:
                               for x in labels
                           ]:
 
-                              print(
-                                  "MATCH_FOUND_BY_RELEASE_LABEL"
-                              )
-
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
 
                               raise SystemExit(0)
 
-                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
                       PY
                       )"
 
-                      echo "=============================================="
-                      echo "MATCH RESULT"
                       echo "$MATCH_RESULT"
-                      echo "=============================================="
 
                       export EPIC_EXISTS="$(
                         echo "$MATCH_RESULT" |
@@ -703,167 +631,177 @@ pipeline:
                               value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                           timeout: 5m
                     - step:
-                        type: Run
+                        type: ShellScript
                         name: Create_Git_Branch
                         identifier: Create_Git_Branch
                         when:
                           stageStatus: Success
                         spec:
-                          shell: Sh
-                          envVariables:
-                            GITHUB_TOKEN: <+secrets.getValue("cegeka-poc2")>
-                            EPIC_KEY: <+execution.steps.Create_Parent_Release_Ticket.issue.key>
-                          command: |-
-                            set -e
+                          shell: Bash
+                          onDelegate: true
+                          source:
+                            type: Inline
+                            spec:
+                              script: |-
+                                set -e
 
-                            echo "=============================================="
-                            echo "CEGEKA GIT BRANCH CREATION"
-                            echo "=============================================="
+                                echo "=============================================="
+                                echo "CEGEKA GIT BRANCH CREATION"
+                                echo "=============================================="
 
-                            REPO_OWNER="manjunathy-harness"
-                            REPO_NAME="cegeka-poc"
-                            BASE_BRANCH="main"
+                                REPO_OWNER="manjunathy-harness"
+                                REPO_NAME="cegeka-poc"
+                                BASE_BRANCH="main"
 
-                            if [ -z "$EPIC_KEY" ]; then
-                              echo "ERROR: Jira Epic key was not returned."
-                              exit 1
-                            fi
+                                EPIC_KEY="<+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>"
 
-                            BRANCH_NAME="security/${EPIC_KEY}"
+                                if [ -z "$EPIC_KEY" ]; then
+                                  echo "ERROR: Jira Epic key was not returned."
+                                  exit 1
+                                fi
 
-                            echo "Jira Epic : ${EPIC_KEY}"
-                            echo "Branch    : ${BRANCH_NAME}"
-                            echo "Repository: ${REPO_OWNER}/${REPO_NAME}"
+                                BRANCH_NAME="security/${EPIC_KEY}"
 
-                            if [ -z "$GITHUB_TOKEN" ]; then
-                              echo "ERROR: GITHUB_TOKEN was not injected."
-                              exit 1
-                            fi
+                                echo "Jira Epic : ${EPIC_KEY}"
+                                echo "Branch    : ${BRANCH_NAME}"
+                                echo "Repository: ${REPO_OWNER}/${REPO_NAME}"
 
-                            # ------------------------------------------------
-                            # GET MAIN BRANCH SHA
-                            # ------------------------------------------------
+                                if [ -z "$GITHUB_TOKEN" ]; then
+                                  echo "ERROR: GITHUB_TOKEN was not injected."
+                                  exit 1
+                                fi
 
-                            echo "Getting main branch SHA..."
+                                # ==================================================
+                                # GET MAIN BRANCH
+                                # ==================================================
 
-                            MAIN_RESPONSE_FILE="/tmp/github-main.json"
+                                echo ""
+                                echo "Getting main branch SHA..."
 
-                            MAIN_HTTP_STATUS="$(
-                              curl -sS \
-                                -o "$MAIN_RESPONSE_FILE" \
-                                -w "%{http_code}" \
-                                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                -H "Accept: application/vnd.github+json" \
-                                -H "X-GitHub-Api-Version: 2022-11-28" \
-                                "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BASE_BRANCH}"
-                            )"
+                                MAIN_RESPONSE_FILE="/tmp/github-main.json"
 
-                            echo "Main branch HTTP status: ${MAIN_HTTP_STATUS}"
+                                MAIN_HTTP_STATUS="$(
+                                  curl -sS \
+                                    -o "$MAIN_RESPONSE_FILE" \
+                                    -w "%{http_code}" \
+                                    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                                    -H "Accept: application/vnd.github+json" \
+                                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BASE_BRANCH}"
+                                )"
 
-                            if [ "$MAIN_HTTP_STATUS" != "200" ]; then
-                              echo "ERROR: Could not get main branch."
-                              cat "$MAIN_RESPONSE_FILE"
-                              exit 1
-                            fi
+                                echo "Main branch HTTP status: ${MAIN_HTTP_STATUS}"
 
-                            MAIN_SHA="$(
-                              python3 - <<'PY'
-                            import json
+                                if [ "$MAIN_HTTP_STATUS" != "200" ]; then
+                                  echo "ERROR: Could not get main branch."
+                                  cat "$MAIN_RESPONSE_FILE"
+                                  exit 1
+                                fi
 
-                            with open(
-                                "/tmp/github-main.json",
-                                "r"
-                            ) as f:
-                                data = json.load(f)
+                                MAIN_SHA="$(
+                                  python3 - <<'PY'
+                                import json
 
-                            print(
-                                data["object"]["sha"]
-                            )
-                            PY
-                            )"
+                                with open(
+                                    "/tmp/github-main.json",
+                                    "r"
+                                ) as f:
+                                    data = json.load(f)
 
-                            if [ -z "$MAIN_SHA" ]; then
-                              echo "ERROR: Main SHA is empty."
-                              exit 1
-                            fi
+                                print(data["object"]["sha"])
+                                PY
+                                )"
 
-                            echo "Main SHA: ${MAIN_SHA}"
+                                if [ -z "$MAIN_SHA" ]; then
+                                  echo "ERROR: Main SHA is empty."
+                                  exit 1
+                                fi
 
-                            # ------------------------------------------------
-                            # CHECK WHETHER BRANCH ALREADY EXISTS
-                            # ------------------------------------------------
+                                echo "Main SHA: ${MAIN_SHA}"
 
-                            echo "Checking whether branch already exists..."
+                                # ==================================================
+                                # CHECK IF BRANCH ALREADY EXISTS
+                                # ==================================================
 
-                            BRANCH_RESPONSE_FILE="/tmp/github-branch.json"
+                                echo ""
+                                echo "Checking whether branch already exists..."
 
-                            BRANCH_HTTP_STATUS="$(
-                              curl -sS \
-                                -o "$BRANCH_RESPONSE_FILE" \
-                                -w "%{http_code}" \
-                                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                -H "Accept: application/vnd.github+json" \
-                                -H "X-GitHub-Api-Version: 2022-11-28" \
-                                "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BRANCH_NAME}"
-                            )"
+                                BRANCH_RESPONSE_FILE="/tmp/github-branch.json"
 
-                            echo "Existing branch HTTP status: ${BRANCH_HTTP_STATUS}"
+                                BRANCH_HTTP_STATUS="$(
+                                  curl -sS \
+                                    -o "$BRANCH_RESPONSE_FILE" \
+                                    -w "%{http_code}" \
+                                    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                                    -H "Accept: application/vnd.github+json" \
+                                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BRANCH_NAME}"
+                                )"
 
-                            if [ "$BRANCH_HTTP_STATUS" = "200" ]; then
+                                echo "Existing branch HTTP status: ${BRANCH_HTTP_STATUS}"
 
-                              echo "Branch already exists:"
-                              echo "${BRANCH_NAME}"
+                                if [ "$BRANCH_HTTP_STATUS" = "200" ]; then
 
-                              export BRANCH_NAME
+                                  echo ""
+                                  echo "=============================================="
+                                  echo "BRANCH ALREADY EXISTS"
+                                  echo "=============================================="
 
-                            else
+                                  echo "Branch: ${BRANCH_NAME}"
 
-                              # ------------------------------------------------
-                              # CREATE BRANCH
-                              # ------------------------------------------------
+                                else
 
-                              echo "Creating branch..."
+                                  # ==================================================
+                                  # CREATE BRANCH
+                                  # ==================================================
 
-                              CREATE_RESPONSE_FILE="/tmp/github-create-branch.json"
+                                  echo ""
+                                  echo "Creating branch..."
 
-                              CREATE_HTTP_STATUS="$(
-                                curl -sS \
-                                  -o "$CREATE_RESPONSE_FILE" \
-                                  -w "%{http_code}" \
-                                  -X POST \
-                                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                  -H "Accept: application/vnd.github+json" \
-                                  -H "X-GitHub-Api-Version: 2022-11-28" \
-                                  "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/refs" \
-                                  -d "{
-                                    \"ref\": \"refs/heads/${BRANCH_NAME}\",
-                                    \"sha\": \"${MAIN_SHA}\"
-                                  }"
-                              )"
+                                  CREATE_RESPONSE_FILE="/tmp/github-create-branch.json"
 
-                              echo "Create branch HTTP status: ${CREATE_HTTP_STATUS}"
+                                  CREATE_HTTP_STATUS="$(
+                                    curl -sS \
+                                      -o "$CREATE_RESPONSE_FILE" \
+                                      -w "%{http_code}" \
+                                      -X POST \
+                                      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                                      -H "Accept: application/vnd.github+json" \
+                                      -H "X-GitHub-Api-Version: 2022-11-28" \
+                                      "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/refs" \
+                                      -d "{
+                                        \"ref\": \"refs/heads/${BRANCH_NAME}\",
+                                        \"sha\": \"${MAIN_SHA}\"
+                                      }"
+                                  )"
 
-                              if [ "$CREATE_HTTP_STATUS" != "201" ]; then
+                                  echo "Create branch HTTP status: ${CREATE_HTTP_STATUS}"
 
-                                echo "ERROR: GitHub branch creation failed."
+                                  if [ "$CREATE_HTTP_STATUS" != "201" ]; then
+                                    echo "ERROR: GitHub branch creation failed."
+                                    cat "$CREATE_RESPONSE_FILE"
+                                    exit 1
+                                  fi
 
-                                cat "$CREATE_RESPONSE_FILE"
+                                  echo ""
+                                  echo "=============================================="
+                                  echo "BRANCH CREATED SUCCESSFULLY"
+                                  echo "=============================================="
 
-                                exit 1
+                                  echo "Branch: ${BRANCH_NAME}"
 
-                              fi
+                                fi
 
-                              echo "=============================================="
-                              echo "BRANCH CREATED SUCCESSFULLY"
-                              echo "=============================================="
-
-                              echo "Branch: ${BRANCH_NAME}"
-
-                              export BRANCH_NAME
-
-                            fi
+                                export BRANCH_NAME
+                          environmentVariables:
+                            - name: GITHUB_TOKEN
+                              type: Secret
+                              value: cegeka-poc2
                           outputVariables:
                             - name: BRANCH_NAME
+                              type: String
+                              value: BRANCH_NAME
+                          timeout: 10m
                     - step:
                         type: JiraCreate
                         name: Create_Child_Vulnerability_Ticket
@@ -902,16 +840,10 @@ pipeline:
                                 Release:
                                 <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
 
-                                Jira Epic:
-                                <+execution.steps.Create_Parent_Release_Ticket.issue.key>
-
-                                Git Branch:
-                                security/<+execution.steps.Create_Parent_Release_Ticket.issue.key>
-
                                 Pipeline execution:
                                 <+pipeline.executionUrl>
                             - name: Parent
-                              value: <+execution.steps.Create_Parent_Release_Ticket.issue.key>
+                              value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
                           timeout: 5m
                           failureStrategies:
                             - onFailure:
