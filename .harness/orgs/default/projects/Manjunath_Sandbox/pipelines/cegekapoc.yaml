@@ -673,12 +673,15 @@ pipeline:
                             exit 1
                           fi
 
-                          MAIN_SHA="$(python3 - <<'PY'
-                          import json
-                          with open('/tmp/github-main-ref.json') as f:
-                              print(json.load(f)['object']['sha'])
-                          PY
-                          )"
+                          MAIN_SHA="$(grep -o '"sha"[[:space:]]*:[[:space:]]*"[^"]*"' /tmp/github-main-ref.json \
+                            | head -1 \
+                            | sed 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
+
+                          if [ -z "$MAIN_SHA" ]; then
+                            echo "ERROR: Could not extract main branch SHA."
+                            cat /tmp/github-main-ref.json
+                            exit 1
+                          fi
 
                           BRANCH_RESPONSE="/tmp/github-branch-ref.json"
                           BRANCH_HTTP="$(curl -sS -o "$BRANCH_RESPONSE" -w "%{http_code}" \
@@ -691,11 +694,9 @@ pipeline:
                           if [ "$BRANCH_HTTP" = "200" ]; then
                             echo "Branch already exists."
                           else
-                            CREATE_BODY="$(python3 - <<PY
-                          import json
-                          print(json.dumps({'ref':'refs/heads/${BRANCH_NAME}','sha':'${MAIN_SHA}'}))
-                          PY
-                          )"
+                            CREATE_BODY="$(printf '{"ref":"refs/heads/%s","sha":"%s"}' \
+                              "$BRANCH_NAME" \
+                              "$MAIN_SHA")"
 
                             CREATE_HTTP="$(curl -sS -o /tmp/github-create-branch.json -w "%{http_code}" \
                               -X POST \
@@ -716,11 +717,7 @@ pipeline:
                           fi
 
                           LABEL="security-${EPIC_KEY}"
-                          LABEL_BODY="$(python3 - <<PY
-                          import json
-                          print(json.dumps({'update':{'labels':[{'add':'${LABEL}'}]}}))
-                          PY
-                          )"
+                          LABEL_BODY="$(printf '{"update":{"labels":[{"add":"%s"}]}}' "$LABEL")"
 
                           JIRA_UPDATE_HTTP="$(curl -sS -o /tmp/jira-branch-label.json -w "%{http_code}" \
                             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
@@ -739,12 +736,10 @@ pipeline:
                           echo "Jira label added: ${LABEL}"
 
                           if [ "$BRANCH_CREATED" = "true" ]; then
-                            COMMENT_BODY="$(python3 - <<PY
-                          import json
-                          url='${BRANCH_URL}'
-                          print(json.dumps({'body':{'type':'doc','version':1,'content':[{'type':'paragraph','content':[{'type':'text','text':'Git Branch: ${BRANCH_NAME}'},{'type':'text','text':' | '},{'type':'text','text':url,'marks':[{'type':'link','attrs':{'href':url}}]}]}]}}}))
-                          PY
-                          )"
+                            COMMENT_BODY="$(printf '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Git Branch: %s"},{"type":"text","text":" | "},{"type":"text","text":"%s","marks":[{"type":"link","attrs":{"href":"%s"}}]}]}]}}' \
+                              "$BRANCH_NAME" \
+                              "$BRANCH_URL" \
+                              "$BRANCH_URL")"
 
                             COMMENT_HTTP="$(curl -sS -o /tmp/jira-branch-comment.json -w "%{http_code}" \
                               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
