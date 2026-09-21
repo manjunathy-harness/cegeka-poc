@@ -660,6 +660,7 @@ pipeline:
 
                           RESPONSE_FILE="/tmp/jira-child-response.json"
                           SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Task AND parent = ${EPIC_KEY} ORDER BY created DESC"
+                          export SEARCH_JQL
 
                           REQUEST_BODY="$(python3 - <<PY
                           import json
@@ -807,7 +808,7 @@ pipeline:
                             type: MarkAsSuccess
                   strategy:
                     repeat:
-                      items: (<+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_ITEMS>).split("@@@")
+                      items: <+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_ITEMS.split("@@@")>
                       maxConcurrency: 5
     - stage:
         name: Create_Security_Branch
