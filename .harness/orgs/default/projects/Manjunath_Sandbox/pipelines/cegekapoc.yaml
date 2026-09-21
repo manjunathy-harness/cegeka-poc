@@ -8,8 +8,23 @@ pipeline:
     ci:
       codebase:
         connectorRef: cegekapoc
-        build: <+input>
+        build:
+          type: branch
+          spec:
+            branch: <+input>
   variables:
+    - name: execution_mode
+      type: String
+      required: true
+      value: <+input>.allowedValues(AUTO,MANUAL)
+    - name: jira_epic_key
+      type: String
+      required: false
+      value: <+input>
+    - name: branch_name
+      type: String
+      required: false
+      value: <+input>
     - name: jira_project_key
       type: String
       required: false
@@ -66,20 +81,12 @@ pipeline:
                           echo "Repository: ${GITHUB_USER}/${REPO}"
                           echo "Branch: ${BRANCH}"
 
-                          echo "=============================================="
-                          echo "VALIDATING GITHUB TOKEN"
-                          echo "=============================================="
-
                           if [ -z "$GITHUB_TOKEN" ]; then
                             echo "ERROR: GITHUB_TOKEN was not injected."
                             exit 1
                           fi
 
-                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
-                          TOKEN_SHA256="$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')"
-
-                          echo "Token length: ${TOKEN_LENGTH}"
-                          echo "Token SHA256: ${TOKEN_SHA256}"
+                          echo "Validating GitHub authentication..."
 
                           GITHUB_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_user.json \
@@ -87,8 +94,6 @@ pipeline:
                             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             https://api.github.com/user)"
-
-                          echo "GitHub HTTP status: ${GITHUB_HTTP_STATUS}"
 
                           if [ "$GITHUB_HTTP_STATUS" != "200" ]; then
                             echo "ERROR: GitHub authentication failed."
@@ -102,10 +107,6 @@ pipeline:
 
                           echo "GitHub user: ${GITHUB_LOGIN}"
 
-                          echo "=============================================="
-                          echo "VALIDATING REPOSITORY ACCESS"
-                          echo "=============================================="
-
                           REPO_HTTP_STATUS="$(curl -sS \
                             -o /tmp/github_repo.json \
                             -w "%{http_code}" \
@@ -113,19 +114,13 @@ pipeline:
                             -H "Accept: application/vnd.github+json" \
                             "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
 
-                          echo "Repository HTTP status: ${REPO_HTTP_STATUS}"
-
                           if [ "$REPO_HTTP_STATUS" != "200" ]; then
                             echo "ERROR: Repository access failed."
                             cat /tmp/github_repo.json
                             exit 1
                           fi
 
-                          echo "REPOSITORY ACCESS SUCCESS"
-
-                          echo "=============================================="
-                          echo "CLONING REPOSITORY"
-                          echo "=============================================="
+                          echo "Repository access: SUCCESS"
 
                           WORK_DIR="/tmp/cegeka-release"
 
@@ -140,9 +135,7 @@ pipeline:
 
                           git fetch --tags --force origin
 
-                          echo "=============================================="
-                          echo "EXISTING RELEASE TAGS"
-                          echo "=============================================="
+                          echo "Existing release tags:"
 
                           git tag -l |
                             grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
@@ -156,8 +149,11 @@ pipeline:
                           )"
 
                           if [ -z "$LATEST_TAG" ]; then
+
                             NEW_TAG="v1.0.0.1"
+
                           else
+
                             VERSION="${LATEST_TAG#v}"
 
                             MAJOR="$(echo "$VERSION" | cut -d. -f1)"
@@ -168,32 +164,19 @@ pipeline:
                             BUILD=$((BUILD + 1))
 
                             NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
+
                           fi
 
                           RELEASE_NAME="${NEW_TAG#v}"
-
-                          echo "=============================================="
-                          echo "RELEASE VERSION"
-                          echo "=============================================="
 
                           echo "Latest tag : ${LATEST_TAG:-NONE}"
                           echo "New tag    : ${NEW_TAG}"
                           echo "Release    : ${RELEASE_NAME}"
 
-                          echo "=============================================="
-                          echo "CREATING GIT TAG"
-                          echo "=============================================="
-
                           git config user.name "Harness Release Automation"
                           git config user.email "harness-release@harness.io"
 
                           git tag "$NEW_TAG" "$(git rev-parse HEAD)"
-
-                          echo "Local tag created: ${NEW_TAG}"
-
-                          echo "=============================================="
-                          echo "PUSHING TAG TO GITHUB"
-                          echo "=============================================="
 
                           GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
 
@@ -206,23 +189,16 @@ pipeline:
 
                           chmod 600 "$GIT_CREDENTIAL_FILE"
 
-                          git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
+                          git config credential.helper \
+                            "store --file=${GIT_CREDENTIAL_FILE}"
 
                           git push origin "$NEW_TAG"
 
                           echo "Git tag pushed successfully: ${NEW_TAG}"
 
-                          echo "=============================================="
-                          echo "VERIFYING REMOTE TAG"
-                          echo "=============================================="
-
                           git ls-remote --tags origin "$NEW_TAG"
 
                           rm -f "$GIT_CREDENTIAL_FILE"
-
-                          echo "=============================================="
-                          echo "RELEASE GENERATION COMPLETE"
-                          echo "=============================================="
 
                           export RELEASE_NAME
                           export RELEASE_TAG="$NEW_TAG"
@@ -254,12 +230,37 @@ pipeline:
             steps:
               - step:
                   type: Run
+                  name: Show_Execution_Context
+                  identifier: Show_Execution_Context
+                  spec:
+                    shell: Sh
+                    command: |-
+                      echo "=============================================="
+                      echo "CEGEKA EXECUTION CONTEXT"
+                      echo "=============================================="
+
+                      echo "Execution mode:"
+                      echo "<+pipeline.variables.execution_mode>"
+
+                      echo "Jira Epic:"
+                      echo "<+pipeline.variables.jira_epic_key>"
+
+                      echo "Branch:"
+                      echo "<+pipeline.variables.branch_name>"
+
+                      echo "Codebase branch:"
+                      echo "<+codebase.branch>"
+              - step:
+                  type: Run
                   name: Install_Dependencies
                   identifier: Install_Dependencies
                   spec:
                     shell: Sh
                     command: |-
+                      set -e
+
                       cd sample-app
+
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -285,7 +286,9 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
+
                       npm audit --json > /harness/npm-audit.json || true
+
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -375,21 +378,9 @@ pipeline:
                     command: |-
                       set -e
 
-                      echo "=============================================="
-                      echo "JIRA EPIC LOOKUP"
-                      echo "=============================================="
-
-                      echo "PROJECT=$JIRA_PROJECT_KEY"
-                      echo "RELEASE=$RELEASE_NAME"
-                      echo "LABEL=$RELEASE_LABEL"
-
-                      echo "=============================================="
-
                       RESPONSE_FILE="/tmp/jira-response.json"
 
                       export SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
-
-                      echo "JQL=$SEARCH_JQL"
 
                       REQUEST_BODY="$(python3 - <<'PY'
                       import json
@@ -410,10 +401,6 @@ pipeline:
                       PY
                       )"
 
-                      echo "=============================================="
-                      echo "SEARCHING JIRA"
-                      echo "=============================================="
-
                       HTTP_CODE="$(curl -sS \
                         -o "$RESPONSE_FILE" \
                         -w "%{http_code}" \
@@ -427,16 +414,9 @@ pipeline:
                       echo "JIRA HTTP STATUS=$HTTP_CODE"
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed."
                         cat "$RESPONSE_FILE"
                         exit 1
                       fi
-
-                      echo "Jira search successful."
-
-                      echo "=============================================="
-                      echo "SEARCHING FOR EXISTING RELEASE EPIC"
-                      echo "=============================================="
 
                       export RESPONSE_FILE
                       export RELEASE_NAME
@@ -454,9 +434,8 @@ pipeline:
 
                       issues = data.get("issues", [])
 
-                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
-
                       for issue in issues:
+
                           key = issue.get("key", "")
                           fields = issue.get("fields", {})
 
@@ -469,45 +448,30 @@ pipeline:
                               continue
 
                           if release_name in summary.lower():
-                              print("MATCH_FOUND_BY_RELEASE_NAME")
+
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
                               raise SystemExit(0)
 
                           if release_label in [str(x).lower() for x in labels]:
-                              print("MATCH_FOUND_BY_RELEASE_LABEL")
+
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
                               raise SystemExit(0)
 
-                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
-                      print("EPIC_SUMMARY=")
                       PY
                       )"
 
-                      echo "=============================================="
-                      echo "MATCH RESULT"
                       echo "$MATCH_RESULT"
-                      echo "=============================================="
 
                       export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
                       export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
                       export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
-
-                      if [ -z "$EPIC_EXISTS" ]; then
-                        EPIC_EXISTS="false"
-                      fi
-
-                      echo "EPIC_EXISTS=$EPIC_EXISTS"
-                      echo "EPIC_KEY=$EPIC_KEY"
-                      echo "EPIC_STATUS=$EPIC_STATUS"
 
                       export EPIC_EXISTS
                       export EPIC_KEY
@@ -548,13 +512,16 @@ pipeline:
                               value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                             - name: Description
                               value: |-
-                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
+                                Automated security scan for release
+                                <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
 
-                                Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+                                Total vulnerabilities found:
+                                <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
                                 Each vulnerability has been filed as a child ticket below.
 
-                                Pipeline execution: <+pipeline.executionUrl>
+                                Pipeline execution:
+                                <+pipeline.executionUrl>
                             - name: Labels
                               value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                           timeout: 5m
@@ -575,16 +542,29 @@ pipeline:
                               value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                             - name: Description
                               value: |-
-                                Advisory / CVE: <+repeat.item.split("~")[0]>
-                                Severity: <+repeat.item.split("~")[1]>
-                                Package: <+repeat.item.split("~")[2]>
-                                Vulnerable range: <+repeat.item.split("~")[3]>
-                                CVSS score: <+repeat.item.split("~")[4]>
-                                Details: <+repeat.item.split("~")[5]>
+                                Advisory / CVE:
+                                <+repeat.item.split("~")[0]>
 
-                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+                                Severity:
+                                <+repeat.item.split("~")[1]>
 
-                                Pipeline execution: <+pipeline.executionUrl>
+                                Package:
+                                <+repeat.item.split("~")[2]>
+
+                                Vulnerable range:
+                                <+repeat.item.split("~")[3]>
+
+                                CVSS score:
+                                <+repeat.item.split("~")[4]>
+
+                                Details:
+                                <+repeat.item.split("~")[5]>
+
+                                Release:
+                                <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+
+                                Pipeline execution:
+                                <+pipeline.executionUrl>
                             - name: Parent
                               value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
                           timeout: 5m
