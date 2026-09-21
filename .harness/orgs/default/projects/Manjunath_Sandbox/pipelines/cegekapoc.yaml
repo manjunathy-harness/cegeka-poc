@@ -18,11 +18,11 @@ pipeline:
     - name: pr_number
       type: String
       required: false
-      value: ""
+      value: <+trigger.prNumber>
     - name: pr_source_branch
       type: String
       required: false
-      value: ""
+      value: <+trigger.sourceBranch>
     - name: jira_project_key
       type: String
       required: false
@@ -793,9 +793,6 @@ pipeline:
         name: PR_Security_Validation
         identifier: PR_Security_Validation
         type: CI
-        when:
-          pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "PR_VALIDATE"
         spec:
           cloneCodebase: true
           platform:
