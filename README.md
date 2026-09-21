@@ -1,4 +1,4 @@
-# Harness CI/CD + STO (OWASP) + Jira automation demo
+# Harness CI/CD + STO (OWASP) + Jira automation demo.
 
 This package gives you a working Harness pipeline plus a small vulnerable
 sample app, built to demo one specific flow: **when a security scan finds
