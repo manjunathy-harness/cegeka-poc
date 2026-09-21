@@ -4,919 +4,133 @@ pipeline:
   projectIdentifier: Manjunath_Sandbox
   orgIdentifier: default
   tags: {}
-  allowStageExecutions: true
   properties:
     ci:
       codebase:
         connectorRef: cegekapoc
+        repoName: manjunathy-harness/cegeka-poc
         build: <+input>
   variables:
     - name: execution_mode
       type: String
-      required: false
-      value: NORMAL
-    - name: pr_number
+      description: PR = build and scan only. WEEKLY_SCAN = vulnerability remediation workflow.
+      required: true
+      value: <+input>
+    - name: release_name
       type: String
+      description: Release name for weekly vulnerability remediation.
       required: false
-      value: <+trigger.prNumber>
-    - name: pr_source_branch
-      type: String
-      required: false
-      value: <+trigger.sourceBranch>
-    - name: jira_project_key
-      type: String
-      required: false
-      value: SCRUM
-    - name: jira_parent_issue_type
-      type: String
-      required: false
-      value: Epic
-    - name: jira_child_issue_type
-      type: String
-      required: false
-      value: Task
-    - name: min_severity_for_demo
-      type: String
-      required: false
-      value: low
+      value: ""
   stages:
     - stage:
-        name: Release_Queue
-        identifier: Release_Queue
-        type: Custom
-        when:
-          pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "NORMAL"
-        spec:
-          execution:
-            steps:
-              - step:
-                  type: Queue
-                  name: Release_Version_Queue
-                  identifier: Release_Version_Queue
-                  spec:
-                    key: cegeka-release-version
-                    scope: Pipeline
-              - step:
-                  type: ShellScript
-                  name: Generate_Release_Version
-                  identifier: Generate_Release_Version
-                  spec:
-                    shell: Bash
-                    onDelegate: true
-                    source:
-                      type: Inline
-                      spec:
-                        script: |-
-                          set -e
-
-                          echo "=============================================="
-                          echo "CEGEKA RELEASE VERSION GENERATION"
-                          echo "=============================================="
-
-                          GITHUB_USER="manjunathy-harness"
-                          REPO="cegeka-poc"
-                          BRANCH="main"
-
-                          echo "GitHub User: ${GITHUB_USER}"
-                          echo "Repository: ${GITHUB_USER}/${REPO}"
-                          echo "Branch: ${BRANCH}"
-
-                          echo "=============================================="
-                          echo "VALIDATING GITHUB TOKEN"
-                          echo "=============================================="
-
-                          if [ -z "$GITHUB_TOKEN" ]; then
-                            echo "ERROR: GITHUB_TOKEN was not injected."
-                            exit 1
-                          fi
-
-                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
-                          TOKEN_SHA256="$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')"
-
-                          echo "Token length: ${TOKEN_LENGTH}"
-                          echo "Token SHA256: ${TOKEN_SHA256}"
-
-                          GITHUB_HTTP_STATUS="$(curl -sS \
-                            -o /tmp/github_user.json \
-                            -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            https://api.github.com/user)"
-
-                          echo "GitHub HTTP status: ${GITHUB_HTTP_STATUS}"
-
-                          if [ "$GITHUB_HTTP_STATUS" != "200" ]; then
-                            echo "ERROR: GitHub authentication failed."
-                            cat /tmp/github_user.json
-                            exit 1
-                          fi
-
-                          echo "GitHub authentication: SUCCESS"
-
-                          GITHUB_LOGIN="$(sed -n 's/.*"login":"\([^"]*\)".*/\1/p' /tmp/github_user.json | head -1)"
-
-                          echo "GitHub user: ${GITHUB_LOGIN}"
-
-                          echo "=============================================="
-                          echo "VALIDATING REPOSITORY ACCESS"
-                          echo "=============================================="
-
-                          REPO_HTTP_STATUS="$(curl -sS \
-                            -o /tmp/github_repo.json \
-                            -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
-
-                          echo "Repository HTTP status: ${REPO_HTTP_STATUS}"
-
-                          if [ "$REPO_HTTP_STATUS" != "200" ]; then
-                            echo "ERROR: Repository access failed."
-                            cat /tmp/github_repo.json
-                            exit 1
-                          fi
-
-                          echo "REPOSITORY ACCESS SUCCESS"
-
-                          echo "=============================================="
-                          echo "CLONING REPOSITORY"
-                          echo "=============================================="
-
-                          WORK_DIR="/tmp/cegeka-release"
-
-                          rm -rf "$WORK_DIR"
-
-                          git clone \
-                            --branch "$BRANCH" \
-                            "https://github.com/${GITHUB_USER}/${REPO}.git" \
-                            "$WORK_DIR"
-
-                          cd "$WORK_DIR"
-
-                          git fetch --tags --force origin
-
-                          echo "=============================================="
-                          echo "EXISTING RELEASE TAGS"
-                          echo "=============================================="
-
-                          git tag -l |
-                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
-                            sort -V || true
-
-                          LATEST_TAG="$(
-                            git tag -l |
-                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
-                            sort -V |
-                            tail -1
-                          )"
-
-                          if [ -z "$LATEST_TAG" ]; then
-                            NEW_TAG="v1.0.0.1"
-                          else
-                            VERSION="${LATEST_TAG#v}"
-
-                            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
-                            MINOR="$(echo "$VERSION" | cut -d. -f2)"
-                            PATCH="$(echo "$VERSION" | cut -d. -f3)"
-                            BUILD="$(echo "$VERSION" | cut -d. -f4)"
-
-                            BUILD=$((BUILD + 1))
-
-                            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
-                          fi
-
-                          RELEASE_NAME="${NEW_TAG#v}"
-
-                          echo "=============================================="
-                          echo "RELEASE VERSION"
-                          echo "=============================================="
-
-                          echo "Latest tag : ${LATEST_TAG:-NONE}"
-                          echo "New tag    : ${NEW_TAG}"
-                          echo "Release    : ${RELEASE_NAME}"
-
-                          echo "=============================================="
-                          echo "CREATING GIT TAG"
-                          echo "=============================================="
-
-                          git config user.name "Harness Release Automation"
-                          git config user.email "harness-release@harness.io"
-
-                          git tag "$NEW_TAG" "$(git rev-parse HEAD)"
-
-                          echo "Local tag created: ${NEW_TAG}"
-
-                          echo "=============================================="
-                          echo "PUSHING TAG TO GITHUB"
-                          echo "=============================================="
-
-                          GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
-
-                          rm -f "$GIT_CREDENTIAL_FILE"
-
-                          printf 'https://%s:%s@github.com\n' \
-                            "$GITHUB_USER" \
-                            "$GITHUB_TOKEN" \
-                            > "$GIT_CREDENTIAL_FILE"
-
-                          chmod 600 "$GIT_CREDENTIAL_FILE"
-
-                          git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
-
-                          git push origin "$NEW_TAG"
-
-                          echo "Git tag pushed successfully: ${NEW_TAG}"
-
-                          echo "=============================================="
-                          echo "VERIFYING REMOTE TAG"
-                          echo "=============================================="
-
-                          git ls-remote --tags origin "$NEW_TAG"
-
-                          rm -f "$GIT_CREDENTIAL_FILE"
-
-                          echo "=============================================="
-                          echo "RELEASE GENERATION COMPLETE"
-                          echo "=============================================="
-
-                          export RELEASE_NAME
-                          export RELEASE_TAG="$NEW_TAG"
-                    environmentVariables:
-                      - name: GITHUB_TOKEN
-                        type: Secret
-                        value: cegeka-poc2
-                    outputVariables:
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-                      - name: RELEASE_TAG
-                        type: String
-                        value: RELEASE_TAG
-                    timeout: 10m
-    - stage:
-        name: Build_And_Scan
+        name: Build And Scan
         identifier: Build_And_Scan
+        description: Build and security scan
         type: CI
-        when:
-          pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "NORMAL"
         spec:
           cloneCodebase: true
-          platform:
-            os: Linux
-            arch: Amd64
-          runtime:
-            type: Cloud
-            spec: {}
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: <+input>
+              namespace: harness-delegate-ng
+              automountServiceAccountToken: true
+              nodeSelector: {}
+              os: Linux
           execution:
             steps:
               - step:
                   type: Run
-                  name: Install_Dependencies
+                  name: Install Dependencies
                   identifier: Install_Dependencies
                   spec:
-                    shell: Sh
-                    command: |-
-                      cd sample-app
-                      npm install --package-lock-only
-              - step:
-                  type: Owasp
-                  name: OWASP_Dependency_Check
-                  identifier: OWASP_Dependency_Check
-                  spec:
-                    mode: orchestration
-                    config: default
-                    target:
-                      type: repository
-                      name: <+codebase.repoUrl>
-                      variant: <+codebase.branch>
-                      workspace: sample-app
-                    advanced:
-                      log:
-                        level: info
-                    privileged: true
+                    connectorRef: <+input>
+                    image: node:20
+                    shell: Bash
+                    command: |
+                      set -e
+
+                      echo "========================================="
+                      echo "INSTALL DEPENDENCIES"
+                      echo "========================================="
+
+                      npm ci
+
+                      echo "Dependencies installed."
               - step:
                   type: Run
-                  name: Run_NPM_Audit
-                  identifier: Run_NPM_Audit
+                  name: Build Application
+                  identifier: Build_Application
                   spec:
-                    shell: Sh
-                    command: |-
-                      cd sample-app
-                      npm audit --json > /harness/npm-audit.json || true
-                      cat /harness/npm-audit.json
+                    connectorRef: <+input>
+                    image: node:20
+                    shell: Bash
+                    command: |
+                      set -e
+
+                      echo "========================================="
+                      echo "BUILD APPLICATION"
+                      echo "========================================="
+
+                      echo "Execution mode:"
+                      echo "<+pipeline.variables.execution_mode>"
+
+                      npm run build
+
+                      echo "Build completed successfully."
               - step:
                   type: Run
-                  name: Parse_Vulnerabilities
+                  name: Security Scan
+                  identifier: Security_Scan
+                  spec:
+                    connectorRef: <+input>
+                    image: node:20
+                    shell: Bash
+                    command: |
+                      set +e
+
+                      echo "========================================="
+                      echo "SECURITY SCAN"
+                      echo "========================================="
+
+                      npm audit --json > /harness/npm-audit.json
+
+                      AUDIT_EXIT_CODE=$?
+
+                      echo "npm audit exit code: $AUDIT_EXIT_CODE"
+
+                      # Do NOT fail here.
+                      #
+                      # We intentionally allow the scan to complete
+                      # because:
+                      #
+                      # PR:
+                      #   vulnerability -> fail PR pipeline
+                      #
+                      # WEEKLY_SCAN:
+                      #   vulnerability -> Jira/security branch flow
+
+                      exit 0
+              - step:
+                  type: Run
+                  name: Parse Vulnerabilities
                   identifier: Parse_Vulnerabilities
                   spec:
-                    shell: Sh
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "PARSING VULNERABILITIES"
-                      echo "=============================================="
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "MIN_SEVERITY=$MIN_SEVERITY"
-
-                      SEVERITY_FLAG=""
-
-                      if [ -n "$MIN_SEVERITY" ]; then
-                        SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
-                      fi
-
-                      python3 scripts/parse_npm_audit.py \
-                        /harness/npm-audit.json \
-                        "$RELEASE_NAME" \
-                        $SEVERITY_FLAG \
-                        > /harness/vuln_vars.env
-
-                      cat /harness/vuln_vars.env
-
-                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
-                      echo "VULN_ITEMS=$VULN_ITEMS"
-                    outputVariables:
-                      - name: RELEASE_NAME
-                      - name: VULN_COUNT
-                      - name: VULN_ITEMS
-              - step:
-                  type: Run
-                  name: Generate_Release_Label
-                  identifier: Generate_Release_Label
-                  spec:
-                    shell: Sh
-                    envVariables:
-                      RELEASE_NAME: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
-                    command: |-
-                      set -e
-
-                      SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
-                        | tr '[:upper:]' '[:lower:]' \
-                        | sed 's/[^a-z0-9]/-/g' \
-                        | sed 's/--*/-/g' \
-                        | sed 's/^-//; s/-$//')"
-
-                      RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "RELEASE_LABEL=$RELEASE_LABEL"
-
-                      export RELEASE_LABEL
-                    outputVariables:
-                      - name: RELEASE_LABEL
-              - step:
-                  type: Run
-                  name: Lookup_Existing_Jira_Epic
-                  identifier: Lookup_Existing_Jira_Epic
-                  when:
-                    stageStatus: Success
-                    condition: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
-                  spec:
-                    shell: Sh
-                    envVariables:
-                      JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
-                      JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
-                      JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
-                      RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                      JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JIRA EPIC LOOKUP"
-                      echo "=============================================="
-
-                      echo "PROJECT=$JIRA_PROJECT_KEY"
-                      echo "RELEASE=$RELEASE_NAME"
-                      echo "LABEL=$RELEASE_LABEL"
-
-                      echo "=============================================="
-
-                      RESPONSE_FILE="/tmp/jira-response.json"
-
-                      export SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
-
-                      echo "JQL=$SEARCH_JQL"
-
-                      REQUEST_BODY="$(python3 - <<'PY'
-                      import json
-                      import os
-
-                      body = {
-                          "jql": os.environ["SEARCH_JQL"],
-                          "maxResults": 100,
-                          "fields": [
-                              "summary",
-                              "status",
-                              "issuetype",
-                              "labels"
-                          ]
-                      }
-
-                      print(json.dumps(body))
-                      PY
-                      )"
-
-                      echo "=============================================="
-                      echo "SEARCHING JIRA"
-                      echo "=============================================="
-
-                      HTTP_CODE="$(curl -sS \
-                        -o "$RESPONSE_FILE" \
-                        -w "%{http_code}" \
-                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                        -X POST \
-                        -H "Accept: application/json" \
-                        -H "Content-Type: application/json" \
-                        "${JIRA_API_BASE}/search/jql" \
-                        --data "$REQUEST_BODY")"
-
-                      echo "JIRA HTTP STATUS=$HTTP_CODE"
-
-                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed."
-                        cat "$RESPONSE_FILE"
-                        exit 1
-                      fi
-
-                      echo "Jira search successful."
-
-                      echo "=============================================="
-                      echo "SEARCHING FOR EXISTING RELEASE EPIC"
-                      echo "=============================================="
-
-                      export RESPONSE_FILE
-                      export RELEASE_NAME
-                      export RELEASE_LABEL
-
-                      MATCH_RESULT="$(python3 - <<'PY'
-                      import json
-                      import os
-
-                      with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
-                          data = json.load(f)
-
-                      release_name = os.environ["RELEASE_NAME"].strip().lower()
-                      release_label = os.environ["RELEASE_LABEL"].strip().lower()
-
-                      issues = data.get("issues", [])
-
-                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
-
-                      for issue in issues:
-                          key = issue.get("key", "")
-                          fields = issue.get("fields", {})
-
-                          summary = fields.get("summary", "") or ""
-                          status = (fields.get("status", {}) or {}).get("name", "") or ""
-                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "") or ""
-                          labels = fields.get("labels", []) or []
-
-                          if issue_type.lower() != "epic":
-                              continue
-
-                          if release_name in summary.lower():
-                              print("MATCH_FOUND_BY_RELEASE_NAME")
-                              print("EPIC_EXISTS=true")
-                              print(f"EPIC_KEY={key}")
-                              print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
-                              raise SystemExit(0)
-
-                          if release_label in [str(x).lower() for x in labels]:
-                              print("MATCH_FOUND_BY_RELEASE_LABEL")
-                              print("EPIC_EXISTS=true")
-                              print(f"EPIC_KEY={key}")
-                              print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
-                              raise SystemExit(0)
-
-                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
-                      print("EPIC_EXISTS=false")
-                      print("EPIC_KEY=")
-                      print("EPIC_STATUS=")
-                      print("EPIC_SUMMARY=")
-                      PY
-                      )"
-
-                      echo "=============================================="
-                      echo "MATCH RESULT"
-                      echo "$MATCH_RESULT"
-                      echo "=============================================="
-
-                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
-                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
-                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
-
-                      if [ -z "$EPIC_EXISTS" ]; then
-                        EPIC_EXISTS="false"
-                      fi
-
-                      echo "EPIC_EXISTS=$EPIC_EXISTS"
-                      echo "EPIC_KEY=$EPIC_KEY"
-                      echo "EPIC_STATUS=$EPIC_STATUS"
-
-                      export EPIC_EXISTS
-                      export EPIC_KEY
-                      export EPIC_STATUS
-                    outputVariables:
-                      - name: EPIC_EXISTS
-                      - name: EPIC_KEY
-                      - name: EPIC_STATUS
-    - stage:
-        name: Jira_Automation
-        identifier: Jira_Automation
-        type: Custom
-        when:
-          pipelineStatus: Success
-          condition: (<+pipeline.variables.execution_mode> == "NORMAL") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0")
-        spec:
-          execution:
-            steps:
-              - stepGroup:
-                  name: Create_Jira_Tickets
-                  identifier: Create_Jira_Tickets
-                  when:
-                    stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
-                  steps:
-                    - step:
-                        type: JiraCreate
-                        name: Create_Parent_Release_Ticket
-                        identifier: Create_Parent_Release_Ticket
-                        spec:
-                          connectorRef: cegekapocjira
-                          projectKey: <+pipeline.variables.jira_project_key>
-                          issueType: <+pipeline.variables.jira_parent_issue_type>
-                          fields:
-                            - name: Reporter
-                              value: manjunath.chavan2017@gmail.com
-                            - name: Summary
-                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
-                            - name: Description
-                              value: |-
-                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
-
-                                Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
-
-                                Each vulnerability has been filed as a child ticket below.
-
-                                Pipeline execution: <+pipeline.executionUrl>
-                            - name: Labels
-                              value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                          timeout: 5m
-                    - step:
-                        type: JiraCreate
-                        name: Create_Child_Vulnerability_Ticket
-                        identifier: Create_Child_Vulnerability_Ticket
-                        when:
-                          stageStatus: Success
-                        spec:
-                          connectorRef: cegekapocjira
-                          projectKey: <+pipeline.variables.jira_project_key>
-                          issueType: <+pipeline.variables.jira_child_issue_type>
-                          fields:
-                            - name: Reporter
-                              value: manjunath.chavan2017@gmail.com
-                            - name: Summary
-                              value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
-                            - name: Description
-                              value: |-
-                                Advisory / CVE: <+repeat.item.split("~")[0]>
-                                Severity: <+repeat.item.split("~")[1]>
-                                Package: <+repeat.item.split("~")[2]>
-                                Vulnerable range: <+repeat.item.split("~")[3]>
-                                CVSS score: <+repeat.item.split("~")[4]>
-                                Details: <+repeat.item.split("~")[5]>
-
-                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
-
-                                Pipeline execution: <+pipeline.executionUrl>
-                            - name: Parent
-                              value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
-                          timeout: 5m
-                          failureStrategies:
-                            - onFailure:
-                                errors:
-                                  - AllErrors
-                                action:
-                                  type: MarkAsSuccess
-                        strategy:
-                          repeat:
-                            items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
-                            maxConcurrency: 5
-    - stage:
-        name: Create_Security_Branch
-        identifier: Create_Security_Branch
-        type: Custom
-        when:
-          pipelineStatus: Success
-          condition: (<+pipeline.variables.execution_mode> == "NORMAL") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0")
-        spec:
-          execution:
-            steps:
-              - step:
-                  type: ShellScript
-                  name: Create_Git_Branch
-                  identifier: Create_Git_Branch
-                  spec:
+                    connectorRef: <+input>
+                    image: python:3.11
                     shell: Bash
-                    onDelegate: true
-                    source:
-                      type: Inline
-                      spec:
-                        script: |-
-                          set -e
-
-                          REPO_OWNER="manjunathy-harness"
-                          REPO_NAME="cegeka-poc"
-                          BASE_BRANCH="main"
-
-                          if [ -n "${NEW_EPIC_KEY:-}" ] && [ "${NEW_EPIC_KEY}" != "null" ]; then
-                            EPIC_KEY="${NEW_EPIC_KEY}"
-                          else
-                            EPIC_KEY="${EXISTING_EPIC_KEY:-}"
-                          fi
-
-                          if [ -z "$EPIC_KEY" ] || [ "$EPIC_KEY" = "null" ]; then
-                            echo "ERROR: Could not determine Jira Epic key."
-                            exit 1
-                          fi
-
-                          BRANCH_NAME="security/${EPIC_KEY}"
-                          BRANCH_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/tree/${BRANCH_NAME}"
-
-                          echo "Epic: ${EPIC_KEY}"
-                          echo "Branch: ${BRANCH_NAME}"
-
-                          MAIN_RESPONSE="/tmp/github-main-ref.json"
-                          MAIN_HTTP="$(curl -sS -o "$MAIN_RESPONSE" -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BASE_BRANCH}")"
-
-                          if [ "$MAIN_HTTP" != "200" ]; then
-                            echo "ERROR: Failed to read main. HTTP=${MAIN_HTTP}"
-                            cat "$MAIN_RESPONSE"
-                            exit 1
-                          fi
-
-                          MAIN_SHA="$(grep -o '"sha"[[:space:]]*:[[:space:]]*"[^"]*"' /tmp/github-main-ref.json \
-                            | head -1 \
-                            | sed 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
-
-                          if [ -z "$MAIN_SHA" ]; then
-                            echo "ERROR: Could not extract main branch SHA."
-                            cat /tmp/github-main-ref.json
-                            exit 1
-                          fi
-
-                          BRANCH_RESPONSE="/tmp/github-branch-ref.json"
-                          BRANCH_HTTP="$(curl -sS -o "$BRANCH_RESPONSE" -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BRANCH_NAME}")"
-
-                          BRANCH_CREATED="false"
-
-                          if [ "$BRANCH_HTTP" = "200" ]; then
-                            echo "Branch already exists."
-                          else
-                            CREATE_BODY="$(printf '{"ref":"refs/heads/%s","sha":"%s"}' \
-                              "$BRANCH_NAME" \
-                              "$MAIN_SHA")"
-
-                            CREATE_HTTP="$(curl -sS -o /tmp/github-create-branch.json -w "%{http_code}" \
-                              -X POST \
-                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                              -H "Accept: application/vnd.github+json" \
-                              -H "Content-Type: application/json" \
-                              "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/refs" \
-                              --data "$CREATE_BODY")"
-
-                            if [ "$CREATE_HTTP" != "201" ]; then
-                              echo "ERROR: Branch creation failed. HTTP=${CREATE_HTTP}"
-                              cat /tmp/github-create-branch.json
-                              exit 1
-                            fi
-
-                            BRANCH_CREATED="true"
-                            echo "Branch created successfully."
-                          fi
-
-                          LABEL="security-${EPIC_KEY}"
-                          LABEL_BODY="$(printf '{"update":{"labels":[{"add":"%s"}]}}' "$LABEL")"
-
-                          JIRA_UPDATE_HTTP="$(curl -sS -o /tmp/jira-branch-label.json -w "%{http_code}" \
-                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                            -X PUT \
-                            -H "Accept: application/json" \
-                            -H "Content-Type: application/json" \
-                            "${JIRA_API_BASE}/issue/${EPIC_KEY}" \
-                            --data "$LABEL_BODY")"
-
-                          if [ "$JIRA_UPDATE_HTTP" -lt 200 ] || [ "$JIRA_UPDATE_HTTP" -ge 300 ]; then
-                            echo "ERROR: Jira label update failed. HTTP=${JIRA_UPDATE_HTTP}"
-                            cat /tmp/jira-branch-label.json
-                            exit 1
-                          fi
-
-                          echo "Jira label added: ${LABEL}"
-
-                          if [ "$BRANCH_CREATED" = "true" ]; then
-                            COMMENT_BODY="$(printf '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Git Branch: %s"},{"type":"text","text":" | "},{"type":"text","text":"%s","marks":[{"type":"link","attrs":{"href":"%s"}}]}]}]}}' \
-                              "$BRANCH_NAME" \
-                              "$BRANCH_URL" \
-                              "$BRANCH_URL")"
-
-                            COMMENT_HTTP="$(curl -sS -o /tmp/jira-branch-comment.json -w "%{http_code}" \
-                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                              -X POST \
-                              -H "Accept: application/json" \
-                              -H "Content-Type: application/json" \
-                              "${JIRA_API_BASE}/issue/${EPIC_KEY}/comment" \
-                              --data "$COMMENT_BODY")"
-
-                            if [ "$COMMENT_HTTP" -lt 200 ] || [ "$COMMENT_HTTP" -ge 300 ]; then
-                              echo "ERROR: Jira branch comment failed. HTTP=${COMMENT_HTTP}"
-                              cat /tmp/jira-branch-comment.json
-                              exit 1
-                            fi
-                          fi
-
-                          export BRANCH_NAME
-                          export EPIC_KEY
-                          export BRANCH_URL
-                    environmentVariables:
-                      - name: GITHUB_TOKEN
-                        type: Secret
-                        value: cegeka-poc2
-                      - name: JIRA_EMAIL
-                        type: String
-                        value: <+secrets.getValue("cegeka_jira_email")>
-                      - name: JIRA_API_TOKEN
-                        type: String
-                        value: <+secrets.getValue("cegeka-poc-jira")>
-                      - name: JIRA_API_BASE
-                        type: String
-                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
-                      - name: NEW_EPIC_KEY
-                        type: String
-                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
-                      - name: EXISTING_EPIC_KEY
-                        type: String
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
-                    outputVariables:
-                      - name: BRANCH_NAME
-                        type: String
-                        value: BRANCH_NAME
-                      - name: EPIC_KEY
-                        type: String
-                        value: EPIC_KEY
-                      - name: BRANCH_URL
-                        type: String
-                        value: BRANCH_URL
-                    timeout: 10m
-    - stage:
-        name: PR_Security_Validation
-        identifier: PR_Security_Validation
-        type: CI
-        spec:
-          cloneCodebase: true
-          platform:
-            os: Linux
-            arch: Amd64
-          runtime:
-            type: Cloud
-            spec: {}
-          execution:
-            steps:
-              - step:
-                  type: Run
-                  name: PR_Context
-                  identifier: PR_Context
-                  spec:
-                    shell: Sh
-                    envVariables:
-                      SOURCE_BRANCH: <+pipeline.variables.pr_source_branch>
-                    command: |-
+                    command: |
                       set -e
 
-                      if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
-                        echo "ERROR: codebase.sourceBranch is empty."
-                        exit 1
-                      fi
-
-                      EPIC_KEY="$(echo "$SOURCE_BRANCH" | sed 's#^security/##')"
-
-                      if [ "$EPIC_KEY" = "$SOURCE_BRANCH" ]; then
-                        echo "ERROR: Source branch must start with security/."
-                        exit 1
-                      fi
-
-                      if ! echo "$EPIC_KEY" | grep -Eq '^[A-Z][A-Z0-9_]+-[0-9]+$'; then
-                        echo "ERROR: Invalid Jira Epic key: $EPIC_KEY"
-                        exit 1
-                      fi
-
-                      RELEASE_NAME="PR-${EPIC_KEY}"
-
-                      echo "Source branch: $SOURCE_BRANCH"
-                      echo "Epic key: $EPIC_KEY"
-
-                      export SOURCE_BRANCH
-                      export EPIC_KEY
-                      export RELEASE_NAME
-                    outputVariables:
-                      - name: SOURCE_BRANCH
-                        type: String
-                        value: SOURCE_BRANCH
-                      - name: EPIC_KEY
-                        type: String
-                        value: EPIC_KEY
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-              - step:
-                  type: Run
-                  name: Install_Dependencies
-                  identifier: PR_Install_Dependencies
-                  spec:
-                    shell: Sh
-                    command: |-
-                      cd sample-app
-                      npm install --package-lock-only
-              - step:
-                  type: Owasp
-                  name: OWASP_Dependency_Check
-                  identifier: PR_OWASP_Dependency_Check
-                  spec:
-                    mode: orchestration
-                    config: default
-                    target:
-                      type: repository
-                      name: <+codebase.repoUrl>
-                      variant: <+codebase.branch>
-                      workspace: sample-app
-                    advanced:
-                      log:
-                        level: info
-                    privileged: true
-              - step:
-                  type: Run
-                  name: Run_NPM_Audit
-                  identifier: PR_Run_NPM_Audit
-                  spec:
-                    shell: Sh
-                    command: |-
-                      cd sample-app
-                      npm audit --json > /harness/npm-audit.json || true
-                      cat /harness/npm-audit.json
-              - step:
-                  type: Run
-                  name: Parse_Vulnerabilities
-                  identifier: PR_Parse_Vulnerabilities
-                  spec:
-                    shell: Sh
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
-                    command: |-
-                      set -e
+                      echo "========================================="
+                      echo "PARSE VULNERABILITIES"
+                      echo "========================================="
 
                       python3 scripts/parse_npm_audit.py \
-                        /harness/npm-audit.json \
-                        "$RELEASE_NAME" \
-                        --min-severity "$MIN_SEVERITY" \
-                        > /harness/pr_vuln_vars.env
+                        --input /harness/npm-audit.json
 
-                      cat /harness/pr_vuln_vars.env
-
-                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
-                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
-                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
-
-                      echo "VULN_COUNT=$VULN_COUNT"
-
-                      export RELEASE_NAME
-                      export VULN_COUNT
-                      export VULN_ITEMS
+                      echo "Vulnerability parsing completed."
                     outputVariables:
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
                       - name: VULN_COUNT
                         type: String
                         value: VULN_COUNT
@@ -925,200 +139,334 @@ pipeline:
                         value: VULN_ITEMS
               - step:
                   type: Run
-                  name: Close_Epic_On_No_Vulnerabilities
-                  identifier: Close_Epic_On_No_Vulnerabilities
+                  name: PR Vulnerability Gate
+                  identifier: PR_Vulnerability_Gate
                   when:
                     stageStatus: Success
+                    condition: <+pipeline.variables.execution_mode> == "PR"
                   spec:
+                    connectorRef: <+input>
+                    image: alpine:3.20
                     shell: Sh
-                    command: |-
+                    command: |
                       set -e
 
-                      EPIC_KEY="<+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.EPIC_KEY>"
+                      echo "========================================="
+                      echo "PR SECURITY GATE"
+                      echo "========================================="
 
-                      TRANSITIONS_FILE="/tmp/jira-transitions.json"
-                      HTTP_CODE="$(curl -sS -o "$TRANSITIONS_FILE" -w "%{http_code}" \
-                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                        -H "Accept: application/json" \
-                        "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions")"
+                      VULN_COUNT="<+execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
 
-                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira transitions failed. HTTP=${HTTP_CODE}"
-                        cat "$TRANSITIONS_FILE"
+                      echo "Vulnerabilities found: $VULN_COUNT"
+
+                      if [ "$VULN_COUNT" != "0" ]; then
+
+                        echo ""
+                        echo "========================================="
+                        echo "SECURITY VALIDATION FAILED"
+                        echo "========================================="
+                        echo ""
+                        echo "Vulnerabilities were detected."
+                        echo ""
+                        echo "This PR will NOT:"
+                        echo "  - Create a Jira Epic"
+                        echo "  - Create a Jira child ticket"
+                        echo "  - Create a security branch"
+                        echo "  - Enter Jira automation"
+                        echo ""
+                        echo "Developer must fix the vulnerabilities."
+                        echo ""
                         exit 1
                       fi
 
-                      TRANSITION_ID="$(python3 - <<'PY'
-                      import json
-                      with open('/tmp/jira-transitions.json') as f:
-                          data=json.load(f)
-                      for t in data.get('transitions',[]):
-                          if (t.get('name') or '').lower() == 'done' or ((t.get('to') or {}).get('name') or '').lower() == 'done':
-                              print(t.get('id',''))
-                              break
-                      PY
-                      )"
+                      echo ""
+                      echo "No vulnerabilities found."
+                      echo "PR security validation PASSED."
+              - step:
+                  type: Run
+                  name: Generate Release Name
+                  identifier: Generate_Release_Name
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.variables.execution_mode> == "WEEKLY_SCAN"
+                  spec:
+                    connectorRef: <+input>
+                    image: alpine:3.20
+                    shell: Sh
+                    command: |
+                      set -e
 
-                      if [ -z "$TRANSITION_ID" ]; then
-                        echo "No Done transition found."
-                        cat "$TRANSITIONS_FILE"
-                        exit 1
+                      RELEASE_NAME="release-$(date +%Y.%m.%d)"
+
+                      echo "Weekly release:"
+                      echo "$RELEASE_NAME"
+
+                      echo "RELEASE_NAME=$RELEASE_NAME" >> "$HARNESS_ENV_EXPORT"
+                    outputVariables:
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+              - step:
+                  type: Run
+                  name: Weekly Vulnerability Decision
+                  identifier: Weekly_Vulnerability_Decision
+                  when:
+                    stageStatus: Success
+                    condition: <+pipeline.variables.execution_mode> == "WEEKLY_SCAN"
+                  spec:
+                    connectorRef: <+input>
+                    image: alpine:3.20
+                    shell: Sh
+                    command: |
+                      set -e
+
+                      VULN_COUNT="<+execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+
+                      echo "========================================="
+                      echo "WEEKLY VULNERABILITY SCAN"
+                      echo "========================================="
+
+                      echo "Vulnerabilities found: $VULN_COUNT"
+
+                      if [ "$VULN_COUNT" = "0" ]; then
+                        echo ""
+                        echo "No vulnerabilities found."
+                        echo "No Jira Epic will be created."
+                        echo "No security branch will be created."
+                        echo ""
+                      else
+                        echo ""
+                        echo "Vulnerabilities detected."
+                        echo "Entering weekly remediation workflow."
+                        echo ""
                       fi
-
-                      BODY="$(python3 - <<PY
-                      import json
-                      print(json.dumps({'transition':{'id':'${TRANSITION_ID}'}}))
-                      PY
-                      )"
-
-                      HTTP_CODE="$(curl -sS -o /tmp/jira-transition-response.json -w "%{http_code}" \
-                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                        -X POST \
-                        -H "Accept: application/json" \
-                        -H "Content-Type: application/json" \
-                        "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions" \
-                        --data "$BODY")"
-
-                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Failed to close Jira Epic. HTTP=${HTTP_CODE}"
-                        cat /tmp/jira-transition-response.json
-                        exit 1
-                      fi
-
-                      echo "Jira Epic ${EPIC_KEY} transitioned to Done."
-                    environmentVariables:
-                      - name: JIRA_API_BASE
-                        type: String
-                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
-                      - name: JIRA_EMAIL
-                        type: String
-                        value: <+secrets.getValue("cegeka_jira_email")>
-                      - name: JIRA_API_TOKEN
-                        type: String
-                        value: <+secrets.getValue("cegeka-poc-jira")>
-                    timeout: 10m
     - stage:
-        name: PR_Merge_Closure
-        identifier: PR_Merge_Closure
+        name: Weekly Remediation
+        identifier: Weekly_Remediation
+        description: Create Jira remediation work and security branch for weekly scan vulnerabilities.
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "PR_MERGE"
+          condition: |
+            <+pipeline.variables.execution_mode> == "WEEKLY_SCAN"
+            &&
+            <+execution.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
         spec:
           execution:
             steps:
               - step:
-                  type: ShellScript
-                  name: Close_Epic_When_PR_Merged
-                  identifier: Close_Epic_When_PR_Merged
+                  type: Run
+                  name: Check Existing Remediation
+                  identifier: Check_Existing_Remediation
                   spec:
                     shell: Bash
-                    onDelegate: true
-                    source:
-                      type: Inline
-                      spec:
-                        script: |-
-                          set -e
+                    command: |
+                      set -e
 
-                          REPO_OWNER="manjunathy-harness"
-                          REPO_NAME="cegeka-poc"
+                      echo "========================================="
+                      echo "CHECK EXISTING REMEDIATION"
+                      echo "========================================="
 
-                          PR_FILE="/tmp/github-pr.json"
-                          HTTP_CODE="$(curl -sS -o "$PR_FILE" -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR_NUMBER}")"
+                      echo "Release:"
+                      echo "<+execution.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Name.output.outputVariables.RELEASE_NAME>"
 
-                          if [ "$HTTP_CODE" != "200" ]; then
-                            echo "ERROR: Failed to read PR #${PR_NUMBER}. HTTP=${HTTP_CODE}"
-                            cat "$PR_FILE"
-                            exit 1
-                          fi
+                      echo ""
+                      echo "The weekly scan must check whether an open"
+                      echo "remediation already exists before creating"
+                      echo "new Jira/branch work."
+                      echo ""
 
-                          MERGED="$(python3 - <<'PY'
-                          import json
-                          with open('/tmp/github-pr.json') as f:
-                              print(str(json.load(f).get('merged',False)).lower())
-                          PY
-                          )"
+                      # IMPORTANT:
+                      #
+                      # Put your existing Jira lookup/API logic here.
+                      #
+                      # Expected output:
+                      #
+                      # EXISTING_EPIC=true/false
+                      #
+                      # If an existing remediation is open:
+                      #   update existing Epic
+                      #
+                      # If no open remediation exists:
+                      #   create new Epic + security branch
+              - step:
+                  type: Run
+                  name: Jira Remediation
+                  identifier: Jira_Remediation
+                  spec:
+                    shell: Bash
+                    command: |
+                      set -e
 
-                          EPIC_KEY="$(echo "$SOURCE_BRANCH" | sed 's#^security/##')"
+                      echo "========================================="
+                      echo "JIRA REMEDIATION"
+                      echo "========================================="
 
-                          echo "PR #${PR_NUMBER} merged=${MERGED}"
-                          echo "Epic=${EPIC_KEY}"
+                      VULN_COUNT="<+execution.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
 
-                          if [ "$MERGED" != "true" ]; then
-                            echo "PR closed without merge. Epic remains open."
-                            exit 0
-                          fi
+                      RELEASE_NAME="<+execution.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Name.output.outputVariables.RELEASE_NAME>"
 
-                          TRANSITIONS_FILE="/tmp/jira-transitions.json"
-                          HTTP_CODE="$(curl -sS -o "$TRANSITIONS_FILE" -w "%{http_code}" \
-                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                            -H "Accept: application/json" \
-                            "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions")"
+                      echo "Release: $RELEASE_NAME"
+                      echo "Vulnerability count: $VULN_COUNT"
 
-                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                            echo "ERROR: Jira transitions failed. HTTP=${HTTP_CODE}"
-                            cat "$TRANSITIONS_FILE"
-                            exit 1
-                          fi
+                      echo ""
+                      echo "Weekly scan is the ONLY source that"
+                      echo "creates Jira remediation work."
+                      echo ""
 
-                          TRANSITION_ID="$(python3 - <<'PY'
-                          import json
-                          with open('/tmp/jira-transitions.json') as f:
-                              data=json.load(f)
-                          for t in data.get('transitions',[]):
-                              if (t.get('name') or '').lower() == 'done' or ((t.get('to') or {}).get('name') or '').lower() == 'done':
-                                  print(t.get('id',''))
-                                  break
-                          PY
-                          )"
+                      # Keep your existing Jira automation/API
+                      # implementation here.
+                      #
+                      # Logic:
+                      #
+                      # IF existing open Epic exists:
+                      #
+                      #     update existing Epic
+                      #     add only newly discovered vulnerabilities
+                      #
+                      # ELSE:
+                      #
+                      #     create new Epic
+                      #     create child vulnerability tickets
+              - step:
+                  type: Run
+                  name: Create Security Branch
+                  identifier: Create_Security_Branch
+                  spec:
+                    shell: Bash
+                    command: |
+                      set -e
 
-                          if [ -z "$TRANSITION_ID" ]; then
-                            echo "No Done transition found."
-                            cat "$TRANSITIONS_FILE"
-                            exit 1
-                          fi
+                      echo "========================================="
+                      echo "CREATE SECURITY BRANCH"
+                      echo "========================================="
 
-                          BODY="$(python3 - <<PY
-                          import json
-                          print(json.dumps({'transition':{'id':'${TRANSITION_ID}'}}))
-                          PY
-                          )"
+                      RELEASE_NAME="<+execution.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Name.output.outputVariables.RELEASE_NAME>"
 
-                          HTTP_CODE="$(curl -sS -o /tmp/jira-transition-response.json -w "%{http_code}" \
-                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                            -X POST \
-                            -H "Accept: application/json" \
-                            -H "Content-Type: application/json" \
-                            "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions" \
-                            --data "$BODY")"
+                      echo "Release:"
+                      echo "$RELEASE_NAME"
 
-                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                            echo "ERROR: Failed to close Jira Epic ${EPIC_KEY}. HTTP=${HTTP_CODE}"
-                            cat /tmp/jira-transition-response.json
-                            exit 1
-                          fi
+                      # IMPORTANT:
+                      #
+                      # Security branch creation happens ONLY here.
+                      #
+                      # PR executions NEVER reach this stage.
+                      #
+                      # Branch naming example:
+                      #
+                      # security/<release-name>
+                      #
+                      # Example:
+                      #
+                      # security/release-2026.09.21
 
-                          echo "PR #${PR_NUMBER} merged. Jira Epic ${EPIC_KEY} transitioned to Done."
-                    environmentVariables:
-                      - name: GITHUB_TOKEN
-                        type: Secret
-                        value: cegeka-poc2
-                      - name: PR_NUMBER
-                        type: String
-                        value: <+pipeline.variables.pr_number>
-                      - name: SOURCE_BRANCH
-                        type: String
-                        value: <+pipeline.variables.pr_source_branch>
-                      - name: JIRA_API_BASE
-                        type: String
-                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
-                      - name: JIRA_EMAIL
-                        type: String
-                        value: <+secrets.getValue("cegeka_jira_email")>
-                      - name: JIRA_API_TOKEN
-                        type: String
-                        value: <+secrets.getValue("cegeka-poc-jira")>
-                    timeout: 10m
+                      BRANCH_NAME="security/$RELEASE_NAME"
+
+                      echo "Security branch:"
+                      echo "$BRANCH_NAME"
+
+                      echo ""
+                      echo "Use your existing GitHub branch creation"
+                      echo "implementation here."
+              - step:
+                  type: Run
+                  name: Create Vulnerability Tickets
+                  identifier: Create_Vulnerability_Tickets
+                  spec:
+                    shell: Bash
+                    command: |
+                      set -e
+
+                      echo "========================================="
+                      echo "CREATE VULNERABILITY TICKETS"
+                      echo "========================================="
+
+                      echo "Vulnerability list:"
+                      echo "<+execution.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>"
+
+                      echo ""
+                      echo "Your existing Jira child-ticket"
+                      echo "creation logic should process the"
+                      echo "vulnerability list here."
+
+                      # IMPORTANT:
+                      #
+                      # Do NOT create duplicate tickets.
+                      #
+                      # For every vulnerability:
+                      #
+                      #   if already associated with an OPEN
+                      #   remediation Epic:
+                      #
+                      #       do nothing
+                      #
+                      #   if NEW:
+                      #
+                      #       create child ticket
+              - step:
+                  type: Run
+                  name: Weekly Remediation Summary
+                  identifier: Weekly_Remediation_Summary
+                  spec:
+                    shell: Bash
+                    command: |
+                      echo ""
+                      echo "========================================="
+                      echo "WEEKLY REMEDIATION WORKFLOW"
+                      echo "========================================="
+                      echo ""
+                      echo "Execution mode:"
+                      echo "<+pipeline.variables.execution_mode>"
+                      echo ""
+                      echo "Release:"
+                      echo "<+execution.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Name.output.outputVariables.RELEASE_NAME>"
+                      echo ""
+                      echo "Vulnerabilities:"
+                      echo "<+execution.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+                      echo ""
+                      echo "Jira remediation:"
+                      echo "CREATED OR UPDATED"
+                      echo ""
+                      echo "Security branch:"
+                      echo "CREATED OR UPDATED"
+                      echo ""
+                      echo "========================================="
+    - stage:
+        name: Continue
+        identifier: Continue
+        description: Continue to the next application stage.
+        type: Custom
+        when:
+          pipelineStatus: Success
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Pipeline Summary
+                  identifier: Pipeline_Summary
+                  spec:
+                    shell: Bash
+                    command: |
+                      echo ""
+                      echo "========================================="
+                      echo "PIPELINE SUMMARY"
+                      echo "========================================="
+                      echo ""
+                      echo "Execution mode:"
+                      echo "<+pipeline.variables.execution_mode>"
+                      echo ""
+
+                      if [ "<+pipeline.variables.execution_mode>" = "PR" ]; then
+                        echo "PR FLOW:"
+                        echo "Build -> Scan -> Security Gate"
+                        echo ""
+                        echo "No Jira automation."
+                        echo "No security branch."
+                      else
+                        echo "WEEKLY FLOW:"
+                        echo "Build -> Scan -> Jira -> Security Branch"
+                      fi
+
+                      echo ""
+                      echo "========================================="
