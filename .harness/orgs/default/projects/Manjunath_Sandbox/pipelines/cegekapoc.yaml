@@ -277,13 +277,13 @@ pipeline:
             steps:
               - step:
                   type: Run
-                  name: Install_Dependencies
-                  identifier: Install_Dependencies
+                  name: Build_And_Test
+                  identifier: Build_And_Test
                   spec:
                     shell: Sh
                     command: |-
                       cd sample-app
-                      npm install --package-lock-only
+                      mvn -B clean test
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
@@ -302,14 +302,15 @@ pipeline:
                     privileged: true
               - step:
                   type: Run
-                  name: Run_NPM_Audit
-                  identifier: Run_NPM_Audit
+                  name: Run_Maven_Dependency_Check
+                  identifier: Run_Maven_Dependency_Check
                   spec:
                     shell: Sh
                     command: |-
                       cd sample-app
-                      npm audit --json > /harness/npm-audit.json || true
-                      cat /harness/npm-audit.json
+                      mvn -B org.owasp:dependency-check-maven:13.0.0:check -Dformat=JSON -DprettyPrint=true -DfailBuildOnCVSS=11 -DskipTestScope=true || true
+                      cp target/dependency-check-report.json /harness/dependency-check-report.json
+                      cat /harness/dependency-check-report.json
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
@@ -335,8 +336,8 @@ pipeline:
                         SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
                       fi
 
-                      python3 scripts/parse_npm_audit.py \
-                        /harness/npm-audit.json \
+                      python3 scripts/parse_maven_dependency_check.py \
+                        /harness/dependency-check-report.json \
                         "$RELEASE_NAME" \
                         $SEVERITY_FLAG \
                         > /harness/vuln_vars.env
@@ -1040,13 +1041,13 @@ pipeline:
                         value: RELEASE_NAME
               - step:
                   type: Run
-                  name: Install_Dependencies
-                  identifier: PR_Install_Dependencies
+                  name: Build_And_Test
+                  identifier: PR_Build_And_Test
                   spec:
                     shell: Sh
                     command: |-
                       cd sample-app
-                      npm install --package-lock-only
+                      mvn -B clean test
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
@@ -1065,14 +1066,15 @@ pipeline:
                     privileged: true
               - step:
                   type: Run
-                  name: Run_NPM_Audit
-                  identifier: PR_Run_NPM_Audit
+                  name: Run_Maven_Dependency_Check
+                  identifier: PR_Run_Maven_Dependency_Check
                   spec:
                     shell: Sh
                     command: |-
                       cd sample-app
-                      npm audit --json > /harness/npm-audit.json || true
-                      cat /harness/npm-audit.json
+                      mvn -B org.owasp:dependency-check-maven:13.0.0:check -Dformat=JSON -DprettyPrint=true -DfailBuildOnCVSS=11 -DskipTestScope=true || true
+                      cp target/dependency-check-report.json /harness/dependency-check-report.json
+                      cat /harness/dependency-check-report.json
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
@@ -1085,8 +1087,8 @@ pipeline:
                     command: |-
                       set -e
 
-                      python3 scripts/parse_npm_audit.py \
-                        /harness/npm-audit.json \
+                      python3 scripts/parse_maven_dependency_check.py \
+                        /harness/dependency-check-report.json \
                         "$RELEASE_NAME" \
                         --min-severity "$MIN_SEVERITY" \
                         > /harness/pr_vuln_vars.env
