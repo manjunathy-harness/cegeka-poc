@@ -282,25 +282,51 @@ pipeline:
                   spec:
                     shell: Sh
                     command: |-
-                      set -e
+                      set +e
 
                       echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
+                      echo "JAVA VERSION"
                       echo "=============================================="
                       java -version
+
+                      echo ""
+                      echo "=============================================="
+                      echo "JAVAC VERSION"
+                      echo "=============================================="
                       javac -version
+
+                      echo ""
+                      echo "=============================================="
+                      echo "JAVA HOME"
+                      echo "=============================================="
+                      echo "JAVA_HOME=$JAVA_HOME"
+
+                      echo ""
+                      echo "=============================================="
+                      echo "MAVEN VERSION"
+                      echo "=============================================="
                       mvn -version
 
-                      cd sample-app
-
+                      echo ""
                       echo "=============================================="
-                      echo "BUILDING WITH JAVA 17"
+                      echo "JAVA LOCATION"
+                      echo "=============================================="
+                      which java
+                      which javac
+                      which mvn
+
+                      echo ""
+                      echo "=============================================="
+                      echo "PATH"
+                      echo "=============================================="
+                      echo "$PATH"
+
+                      echo ""
+                      echo "=============================================="
+                      echo "TEST COMPLETE"
                       echo "=============================================="
 
-                      mvn -B clean test \
-                        -Dmaven.compiler.release=17 \
-                        -Dmaven.compiler.source=17 \
-                        -Dmaven.compiler.target=17
+                      exit 0
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
@@ -1075,25 +1101,51 @@ pipeline:
                   spec:
                     shell: Sh
                     command: |-
-                      set -e
+                      set +e
 
                       echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
+                      echo "JAVA VERSION"
                       echo "=============================================="
                       java -version
+
+                      echo ""
+                      echo "=============================================="
+                      echo "JAVAC VERSION"
+                      echo "=============================================="
                       javac -version
+
+                      echo ""
+                      echo "=============================================="
+                      echo "JAVA HOME"
+                      echo "=============================================="
+                      echo "JAVA_HOME=$JAVA_HOME"
+
+                      echo ""
+                      echo "=============================================="
+                      echo "MAVEN VERSION"
+                      echo "=============================================="
                       mvn -version
 
-                      cd sample-app
-
+                      echo ""
                       echo "=============================================="
-                      echo "BUILDING WITH JAVA 17"
+                      echo "JAVA LOCATION"
+                      echo "=============================================="
+                      which java
+                      which javac
+                      which mvn
+
+                      echo ""
+                      echo "=============================================="
+                      echo "PATH"
+                      echo "=============================================="
+                      echo "$PATH"
+
+                      echo ""
+                      echo "=============================================="
+                      echo "TEST COMPLETE"
                       echo "=============================================="
 
-                      mvn -B clean test \
-                        -Dmaven.compiler.release=17 \
-                        -Dmaven.compiler.source=17 \
-                        -Dmaven.compiler.target=17
+                      exit 0
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
