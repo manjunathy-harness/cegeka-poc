@@ -305,12 +305,24 @@ pipeline:
                   name: Run_Maven_Dependency_Check
                   identifier: Run_Maven_Dependency_Check
                   spec:
+                    envVariables:
+                      NVD_API_KEY: <+secrets.getValue("cegeka_nvd_api_key")>
                     shell: Sh
                     command: |-
+                      set -e
                       cd sample-app
-                      mvn -B org.owasp:dependency-check-maven:13.0.0:check -Dformat=JSON -DprettyPrint=true -DfailBuildOnCVSS=11 -DskipTestScope=true || true
+                      echo "Running OWASP Dependency-Check for Maven dependencies"
+                      mvn -B org.owasp:dependency-check-maven:13.0.0:check \
+                        -DnvdApiKey="$NVD_API_KEY" \
+                        -DnvdMaxRetryCount=3 \
+                        -Dformat=JSON \
+                        -DprettyPrint=true \
+                        -DfailBuildOnCVSS=11 \
+                        -DskipTestScope=true
+                      test -f target/dependency-check-report.json
                       cp target/dependency-check-report.json /harness/dependency-check-report.json
-                      cat /harness/dependency-check-report.json
+                      echo "Dependency-Check report generated successfully."
+                      ls -lh /harness/dependency-check-report.json
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
@@ -1069,12 +1081,24 @@ pipeline:
                   name: Run_Maven_Dependency_Check
                   identifier: PR_Run_Maven_Dependency_Check
                   spec:
+                    envVariables:
+                      NVD_API_KEY: <+secrets.getValue("cegeka_nvd_api_key")>
                     shell: Sh
                     command: |-
+                      set -e
                       cd sample-app
-                      mvn -B org.owasp:dependency-check-maven:13.0.0:check -Dformat=JSON -DprettyPrint=true -DfailBuildOnCVSS=11 -DskipTestScope=true || true
+                      echo "Running OWASP Dependency-Check for Maven dependencies"
+                      mvn -B org.owasp:dependency-check-maven:13.0.0:check \
+                        -DnvdApiKey="$NVD_API_KEY" \
+                        -DnvdMaxRetryCount=3 \
+                        -Dformat=JSON \
+                        -DprettyPrint=true \
+                        -DfailBuildOnCVSS=11 \
+                        -DskipTestScope=true
+                      test -f target/dependency-check-report.json
                       cp target/dependency-check-report.json /harness/dependency-check-report.json
-                      cat /harness/dependency-check-report.json
+                      echo "Dependency-Check report generated successfully."
+                      ls -lh /harness/dependency-check-report.json
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
