@@ -1,0 +1,4 @@
+com/cegeka/demo/service/GreetingService.class
+com/cegeka/demo/CegekaApplication.class
+com/cegeka/demo/controller/GreetingController.class
+com/cegeka/demo/controller/HealthController.class
