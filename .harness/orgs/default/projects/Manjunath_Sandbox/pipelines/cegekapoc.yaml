@@ -282,51 +282,53 @@ pipeline:
                   spec:
                     shell: Sh
                     command: |-
-                      set +e
+                      set -e
 
+                      echo "=============================================="
+                      echo "SETTING UP JAVA 17"
+                      echo "=============================================="
+
+                      JDK_DIR="/tmp/temurin-17"
+
+                      if [ ! -x "$JDK_DIR/bin/java" ]; then
+                        echo "Downloading Temurin Java 17..."
+                        curl -fsSL \
+                          -o /tmp/temurin-17.tar.gz \
+                          "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
+                        rm -rf "$JDK_DIR"
+                        mkdir -p "$JDK_DIR"
+                        tar -xzf /tmp/temurin-17.tar.gz --strip-components=1 -C "$JDK_DIR"
+                        rm -f /tmp/temurin-17.tar.gz
+                      fi
+
+                      export JAVA_HOME="$JDK_DIR"
+                      export PATH="$JAVA_HOME/bin:$PATH"
+
+                      echo "JAVA_HOME=$JAVA_HOME"
                       echo "=============================================="
                       echo "JAVA VERSION"
                       echo "=============================================="
                       java -version
 
-                      echo ""
                       echo "=============================================="
                       echo "JAVAC VERSION"
                       echo "=============================================="
                       javac -version
 
-                      echo ""
-                      echo "=============================================="
-                      echo "JAVA HOME"
-                      echo "=============================================="
-                      echo "JAVA_HOME=$JAVA_HOME"
-
-                      echo ""
                       echo "=============================================="
                       echo "MAVEN VERSION"
                       echo "=============================================="
                       mvn -version
 
-                      echo ""
                       echo "=============================================="
-                      echo "JAVA LOCATION"
-                      echo "=============================================="
-                      which java
-                      which javac
-                      which mvn
-
-                      echo ""
-                      echo "=============================================="
-                      echo "PATH"
-                      echo "=============================================="
-                      echo "$PATH"
-
-                      echo ""
-                      echo "=============================================="
-                      echo "TEST COMPLETE"
+                      echo "BUILDING WITH JAVA 17"
                       echo "=============================================="
 
-                      exit 0
+                      cd sample-app
+                      mvn -B clean test \
+                        -Dmaven.compiler.release=17 \
+                        -Dmaven.compiler.source=17 \
+                        -Dmaven.compiler.target=17
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
@@ -1101,51 +1103,53 @@ pipeline:
                   spec:
                     shell: Sh
                     command: |-
-                      set +e
+                      set -e
 
+                      echo "=============================================="
+                      echo "SETTING UP JAVA 17"
+                      echo "=============================================="
+
+                      JDK_DIR="/tmp/temurin-17"
+
+                      if [ ! -x "$JDK_DIR/bin/java" ]; then
+                        echo "Downloading Temurin Java 17..."
+                        curl -fsSL \
+                          -o /tmp/temurin-17.tar.gz \
+                          "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
+                        rm -rf "$JDK_DIR"
+                        mkdir -p "$JDK_DIR"
+                        tar -xzf /tmp/temurin-17.tar.gz --strip-components=1 -C "$JDK_DIR"
+                        rm -f /tmp/temurin-17.tar.gz
+                      fi
+
+                      export JAVA_HOME="$JDK_DIR"
+                      export PATH="$JAVA_HOME/bin:$PATH"
+
+                      echo "JAVA_HOME=$JAVA_HOME"
                       echo "=============================================="
                       echo "JAVA VERSION"
                       echo "=============================================="
                       java -version
 
-                      echo ""
                       echo "=============================================="
                       echo "JAVAC VERSION"
                       echo "=============================================="
                       javac -version
 
-                      echo ""
-                      echo "=============================================="
-                      echo "JAVA HOME"
-                      echo "=============================================="
-                      echo "JAVA_HOME=$JAVA_HOME"
-
-                      echo ""
                       echo "=============================================="
                       echo "MAVEN VERSION"
                       echo "=============================================="
                       mvn -version
 
-                      echo ""
                       echo "=============================================="
-                      echo "JAVA LOCATION"
-                      echo "=============================================="
-                      which java
-                      which javac
-                      which mvn
-
-                      echo ""
-                      echo "=============================================="
-                      echo "PATH"
-                      echo "=============================================="
-                      echo "$PATH"
-
-                      echo ""
-                      echo "=============================================="
-                      echo "TEST COMPLETE"
+                      echo "BUILDING WITH JAVA 17"
                       echo "=============================================="
 
-                      exit 0
+                      cd sample-app
+                      mvn -B clean test \
+                        -Dmaven.compiler.release=17 \
+                        -Dmaven.compiler.source=17 \
+                        -Dmaven.compiler.target=17
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
