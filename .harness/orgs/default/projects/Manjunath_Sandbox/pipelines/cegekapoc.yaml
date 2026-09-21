@@ -4,12 +4,25 @@ pipeline:
   projectIdentifier: Manjunath_Sandbox
   orgIdentifier: default
   tags: {}
+  allowStageExecutions: true
   properties:
     ci:
       codebase:
         connectorRef: cegekapoc
         build: <+input>
   variables:
+    - name: execution_mode
+      type: String
+      required: false
+      value: NORMAL
+    - name: pr_number
+      type: String
+      required: false
+      value: ""
+    - name: pr_source_branch
+      type: String
+      required: false
+      value: ""
     - name: jira_project_key
       type: String
       required: false
@@ -31,6 +44,9 @@ pipeline:
         name: Release_Queue
         identifier: Release_Queue
         type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.execution_mode> == "NORMAL"
         spec:
           execution:
             steps:
@@ -75,15 +91,18 @@ pipeline:
                             exit 1
                           fi
 
-                          GITHUB_HTTP_STATUS="$(
-                            curl -sS \
-                              -o /tmp/github_user.json \
-                              -w "%{http_code}" \
-                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                              -H "Accept: application/vnd.github+json" \
-                              -H "X-GitHub-Api-Version: 2022-11-28" \
-                              https://api.github.com/user
-                          )"
+                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
+                          TOKEN_SHA256="$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')"
+
+                          echo "Token length: ${TOKEN_LENGTH}"
+                          echo "Token SHA256: ${TOKEN_SHA256}"
+
+                          GITHUB_HTTP_STATUS="$(curl -sS \
+                            -o /tmp/github_user.json \
+                            -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            https://api.github.com/user)"
 
                           echo "GitHub HTTP status: ${GITHUB_HTTP_STATUS}"
 
@@ -95,11 +114,7 @@ pipeline:
 
                           echo "GitHub authentication: SUCCESS"
 
-                          GITHUB_LOGIN="$(
-                            sed -n 's/.*"login":"\([^"]*\)".*/\1/p' \
-                            /tmp/github_user.json |
-                            head -1
-                          )"
+                          GITHUB_LOGIN="$(sed -n 's/.*"login":"\([^"]*\)".*/\1/p' /tmp/github_user.json | head -1)"
 
                           echo "GitHub user: ${GITHUB_LOGIN}"
 
@@ -107,15 +122,12 @@ pipeline:
                           echo "VALIDATING REPOSITORY ACCESS"
                           echo "=============================================="
 
-                          REPO_HTTP_STATUS="$(
-                            curl -sS \
-                              -o /tmp/github_repo.json \
-                              -w "%{http_code}" \
-                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                              -H "Accept: application/vnd.github+json" \
-                              -H "X-GitHub-Api-Version: 2022-11-28" \
-                              "https://api.github.com/repos/${GITHUB_USER}/${REPO}"
-                          )"
+                          REPO_HTTP_STATUS="$(curl -sS \
+                            -o /tmp/github_repo.json \
+                            -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
 
                           echo "Repository HTTP status: ${REPO_HTTP_STATUS}"
 
@@ -160,11 +172,8 @@ pipeline:
                           )"
 
                           if [ -z "$LATEST_TAG" ]; then
-
                             NEW_TAG="v1.0.0.1"
-
                           else
-
                             VERSION="${LATEST_TAG#v}"
 
                             MAJOR="$(echo "$VERSION" | cut -d. -f1)"
@@ -175,7 +184,6 @@ pipeline:
                             BUILD=$((BUILD + 1))
 
                             NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
-
                           fi
 
                           RELEASE_NAME="${NEW_TAG#v}"
@@ -214,8 +222,7 @@ pipeline:
 
                           chmod 600 "$GIT_CREDENTIAL_FILE"
 
-                          git config credential.helper \
-                            "store --file=${GIT_CREDENTIAL_FILE}"
+                          git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
 
                           git push origin "$NEW_TAG"
 
@@ -251,6 +258,9 @@ pipeline:
         name: Build_And_Scan
         identifier: Build_And_Scan
         type: CI
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.execution_mode> == "NORMAL"
         spec:
           cloneCodebase: true
           platform:
@@ -269,7 +279,6 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm install --package-lock-only
               - step:
                   type: Owasp
@@ -295,9 +304,7 @@ pipeline:
                     shell: Sh
                     command: |-
                       cd sample-app
-
                       npm audit --json > /harness/npm-audit.json || true
-
                       cat /harness/npm-audit.json
               - step:
                   type: Run
@@ -332,23 +339,9 @@ pipeline:
 
                       cat /harness/vuln_vars.env
 
-                      export RELEASE_NAME="$(
-                        grep '^RELEASE_NAME=' \
-                        /harness/vuln_vars.env |
-                        cut -d= -f2-
-                      )"
-
-                      export VULN_COUNT="$(
-                        grep '^VULN_COUNT=' \
-                        /harness/vuln_vars.env |
-                        cut -d= -f2-
-                      )"
-
-                      export VULN_ITEMS="$(
-                        grep '^VULN_ITEMS=' \
-                        /harness/vuln_vars.env |
-                        cut -d= -f2-
-                      )"
+                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
@@ -368,13 +361,11 @@ pipeline:
                     command: |-
                       set -e
 
-                      SAFE_RELEASE_NAME="$(
-                        echo "$RELEASE_NAME" |
-                        tr '[:upper:]' '[:lower:]' |
-                        sed 's/[^a-z0-9]/-/g' |
-                        sed 's/--*/-/g' |
-                        sed 's/^-//; s/-$//'
-                      )"
+                      SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
+                        | tr '[:upper:]' '[:lower:]' \
+                        | sed 's/[^a-z0-9]/-/g' \
+                        | sed 's/--*/-/g' \
+                        | sed 's/^-//; s/-$//')"
 
                       RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
@@ -403,12 +394,23 @@ pipeline:
                     command: |-
                       set -e
 
+                      echo "=============================================="
+                      echo "JIRA EPIC LOOKUP"
+                      echo "=============================================="
+
+                      echo "PROJECT=$JIRA_PROJECT_KEY"
+                      echo "RELEASE=$RELEASE_NAME"
+                      echo "LABEL=$RELEASE_LABEL"
+
+                      echo "=============================================="
+
                       RESPONSE_FILE="/tmp/jira-response.json"
 
                       export SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
 
-                      REQUEST_BODY="$(
-                        python3 - <<'PY'
+                      echo "JQL=$SEARCH_JQL"
+
+                      REQUEST_BODY="$(python3 - <<'PY'
                       import json
                       import os
 
@@ -427,148 +429,96 @@ pipeline:
                       PY
                       )"
 
-                      HTTP_CODE="$(
-                        curl -sS \
-                          -o "$RESPONSE_FILE" \
-                          -w "%{http_code}" \
-                          -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                          -X POST \
-                          -H "Accept: application/json" \
-                          -H "Content-Type: application/json" \
-                          "${JIRA_API_BASE}/search/jql" \
-                          --data "$REQUEST_BODY"
-                      )"
+                      echo "=============================================="
+                      echo "SEARCHING JIRA"
+                      echo "=============================================="
+
+                      HTTP_CODE="$(curl -sS \
+                        -o "$RESPONSE_FILE" \
+                        -w "%{http_code}" \
+                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                        -X POST \
+                        -H "Accept: application/json" \
+                        -H "Content-Type: application/json" \
+                        "${JIRA_API_BASE}/search/jql" \
+                        --data "$REQUEST_BODY")"
 
                       echo "JIRA HTTP STATUS=$HTTP_CODE"
 
                       if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                        echo "ERROR: Jira search failed."
                         cat "$RESPONSE_FILE"
                         exit 1
                       fi
+
+                      echo "Jira search successful."
+
+                      echo "=============================================="
+                      echo "SEARCHING FOR EXISTING RELEASE EPIC"
+                      echo "=============================================="
 
                       export RESPONSE_FILE
                       export RELEASE_NAME
                       export RELEASE_LABEL
 
-                      MATCH_RESULT="$(
-                        python3 - <<'PY'
+                      MATCH_RESULT="$(python3 - <<'PY'
                       import json
                       import os
 
-                      with open(
-                          os.environ["RESPONSE_FILE"],
-                          "r",
-                          encoding="utf-8"
-                      ) as f:
+                      with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
                           data = json.load(f)
 
-                      release_name = (
-                          os.environ["RELEASE_NAME"]
-                          .strip()
-                          .lower()
-                      )
-
-                      release_label = (
-                          os.environ["RELEASE_LABEL"]
-                          .strip()
-                          .lower()
-                      )
+                      release_name = os.environ["RELEASE_NAME"].strip().lower()
+                      release_label = os.environ["RELEASE_LABEL"].strip().lower()
 
                       issues = data.get("issues", [])
 
+                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
+
                       for issue in issues:
-
                           key = issue.get("key", "")
+                          fields = issue.get("fields", {})
 
-                          fields = issue.get(
-                              "fields",
-                              {}
-                          )
-
-                          summary = (
-                              fields.get(
-                                  "summary",
-                                  ""
-                              ) or ""
-                          )
-
-                          status = (
-                              fields.get(
-                                  "status",
-                                  {}
-                              ) or {}
-                          ).get(
-                              "name",
-                              ""
-                          ) or ""
-
-                          issue_type = (
-                              fields.get(
-                                  "issuetype",
-                                  {}
-                              ) or {}
-                          ).get(
-                              "name",
-                              ""
-                          ) or ""
-
-                          labels = (
-                              fields.get(
-                                  "labels",
-                                  []
-                              ) or []
-                          )
+                          summary = fields.get("summary", "") or ""
+                          status = (fields.get("status", {}) or {}).get("name", "") or ""
+                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "") or ""
+                          labels = fields.get("labels", []) or []
 
                           if issue_type.lower() != "epic":
                               continue
 
                           if release_name in summary.lower():
-
+                              print("MATCH_FOUND_BY_RELEASE_NAME")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
-
+                              print(f"EPIC_SUMMARY={summary}")
                               raise SystemExit(0)
 
-                          if release_label in [
-                              str(x).lower()
-                              for x in labels
-                          ]:
-
+                          if release_label in [str(x).lower() for x in labels]:
+                              print("MATCH_FOUND_BY_RELEASE_LABEL")
                               print("EPIC_EXISTS=true")
                               print(f"EPIC_KEY={key}")
                               print(f"EPIC_STATUS={status}")
-
+                              print(f"EPIC_SUMMARY={summary}")
                               raise SystemExit(0)
 
+                      print("NO_MATCHING_RELEASE_EPIC_FOUND")
                       print("EPIC_EXISTS=false")
                       print("EPIC_KEY=")
                       print("EPIC_STATUS=")
+                      print("EPIC_SUMMARY=")
                       PY
                       )"
 
+                      echo "=============================================="
+                      echo "MATCH RESULT"
                       echo "$MATCH_RESULT"
+                      echo "=============================================="
 
-                      export EPIC_EXISTS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_EXISTS=' |
-                        cut -d= -f2- ||
-                        true
-                      )"
-
-                      export EPIC_KEY="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_KEY=' |
-                        cut -d= -f2- ||
-                        true
-                      )"
-
-                      export EPIC_STATUS="$(
-                        echo "$MATCH_RESULT" |
-                        grep '^EPIC_STATUS=' |
-                        cut -d= -f2- ||
-                        true
-                      )"
+                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
+                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
+                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
 
                       if [ -z "$EPIC_EXISTS" ]; then
                         EPIC_EXISTS="false"
@@ -591,7 +541,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+          condition: (<+pipeline.variables.execution_mode> == "NORMAL") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0")
         spec:
           execution:
             steps:
@@ -617,191 +567,16 @@ pipeline:
                               value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                             - name: Description
                               value: |-
-                                Automated security scan for release
-                                <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
+                                Automated security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
 
-                                Total vulnerabilities found:
-                                <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+                                Total vulnerabilities found: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
                                 Each vulnerability has been filed as a child ticket below.
 
-                                Pipeline execution:
-                                <+pipeline.executionUrl>
+                                Pipeline execution: <+pipeline.executionUrl>
                             - name: Labels
                               value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                           timeout: 5m
-                    - step:
-                        type: ShellScript
-                        name: Create_Git_Branch
-                        identifier: Create_Git_Branch
-                        when:
-                          stageStatus: Success
-                        spec:
-                          shell: Bash
-                          onDelegate: true
-                          source:
-                            type: Inline
-                            spec:
-                              script: |-
-                                set -e
-
-                                echo "=============================================="
-                                echo "CEGEKA GIT BRANCH CREATION"
-                                echo "=============================================="
-
-                                REPO_OWNER="manjunathy-harness"
-                                REPO_NAME="cegeka-poc"
-                                BASE_BRANCH="main"
-
-                                EPIC_KEY="<+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>"
-
-                                if [ -z "$EPIC_KEY" ]; then
-                                  echo "ERROR: Jira Epic key was not returned."
-                                  exit 1
-                                fi
-
-                                BRANCH_NAME="security/${EPIC_KEY}"
-
-                                echo "Jira Epic : ${EPIC_KEY}"
-                                echo "Branch    : ${BRANCH_NAME}"
-                                echo "Repository: ${REPO_OWNER}/${REPO_NAME}"
-
-                                if [ -z "$GITHUB_TOKEN" ]; then
-                                  echo "ERROR: GITHUB_TOKEN was not injected."
-                                  exit 1
-                                fi
-
-                                # ==================================================
-                                # GET MAIN BRANCH
-                                # ==================================================
-
-                                echo ""
-                                echo "Getting main branch SHA..."
-
-                                MAIN_RESPONSE_FILE="/tmp/github-main.json"
-
-                                MAIN_HTTP_STATUS="$(
-                                  curl -sS \
-                                    -o "$MAIN_RESPONSE_FILE" \
-                                    -w "%{http_code}" \
-                                    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                    -H "Accept: application/vnd.github+json" \
-                                    -H "X-GitHub-Api-Version: 2022-11-28" \
-                                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BASE_BRANCH}"
-                                )"
-
-                                echo "Main branch HTTP status: ${MAIN_HTTP_STATUS}"
-
-                                if [ "$MAIN_HTTP_STATUS" != "200" ]; then
-                                  echo "ERROR: Could not get main branch."
-                                  cat "$MAIN_RESPONSE_FILE"
-                                  exit 1
-                                fi
-
-                                MAIN_SHA="$(
-                                  python3 - <<'PY'
-                                import json
-
-                                with open(
-                                    "/tmp/github-main.json",
-                                    "r"
-                                ) as f:
-                                    data = json.load(f)
-
-                                print(data["object"]["sha"])
-                                PY
-                                )"
-
-                                if [ -z "$MAIN_SHA" ]; then
-                                  echo "ERROR: Main SHA is empty."
-                                  exit 1
-                                fi
-
-                                echo "Main SHA: ${MAIN_SHA}"
-
-                                # ==================================================
-                                # CHECK IF BRANCH ALREADY EXISTS
-                                # ==================================================
-
-                                echo ""
-                                echo "Checking whether branch already exists..."
-
-                                BRANCH_RESPONSE_FILE="/tmp/github-branch.json"
-
-                                BRANCH_HTTP_STATUS="$(
-                                  curl -sS \
-                                    -o "$BRANCH_RESPONSE_FILE" \
-                                    -w "%{http_code}" \
-                                    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                    -H "Accept: application/vnd.github+json" \
-                                    -H "X-GitHub-Api-Version: 2022-11-28" \
-                                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BRANCH_NAME}"
-                                )"
-
-                                echo "Existing branch HTTP status: ${BRANCH_HTTP_STATUS}"
-
-                                if [ "$BRANCH_HTTP_STATUS" = "200" ]; then
-
-                                  echo ""
-                                  echo "=============================================="
-                                  echo "BRANCH ALREADY EXISTS"
-                                  echo "=============================================="
-
-                                  echo "Branch: ${BRANCH_NAME}"
-
-                                else
-
-                                  # ==================================================
-                                  # CREATE BRANCH
-                                  # ==================================================
-
-                                  echo ""
-                                  echo "Creating branch..."
-
-                                  CREATE_RESPONSE_FILE="/tmp/github-create-branch.json"
-
-                                  CREATE_HTTP_STATUS="$(
-                                    curl -sS \
-                                      -o "$CREATE_RESPONSE_FILE" \
-                                      -w "%{http_code}" \
-                                      -X POST \
-                                      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                                      -H "Accept: application/vnd.github+json" \
-                                      -H "X-GitHub-Api-Version: 2022-11-28" \
-                                      "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/refs" \
-                                      -d "{
-                                        \"ref\": \"refs/heads/${BRANCH_NAME}\",
-                                        \"sha\": \"${MAIN_SHA}\"
-                                      }"
-                                  )"
-
-                                  echo "Create branch HTTP status: ${CREATE_HTTP_STATUS}"
-
-                                  if [ "$CREATE_HTTP_STATUS" != "201" ]; then
-                                    echo "ERROR: GitHub branch creation failed."
-                                    cat "$CREATE_RESPONSE_FILE"
-                                    exit 1
-                                  fi
-
-                                  echo ""
-                                  echo "=============================================="
-                                  echo "BRANCH CREATED SUCCESSFULLY"
-                                  echo "=============================================="
-
-                                  echo "Branch: ${BRANCH_NAME}"
-
-                                fi
-
-                                export BRANCH_NAME
-                          environmentVariables:
-                            - name: GITHUB_TOKEN
-                              type: Secret
-                              value: cegeka-poc2
-                          outputVariables:
-                            - name: BRANCH_NAME
-                              type: String
-                              value: BRANCH_NAME
-                          timeout: 10m
                     - step:
                         type: JiraCreate
                         name: Create_Child_Vulnerability_Ticket
@@ -819,29 +594,16 @@ pipeline:
                               value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                             - name: Description
                               value: |-
-                                Advisory / CVE:
-                                <+repeat.item.split("~")[0]>
+                                Advisory / CVE: <+repeat.item.split("~")[0]>
+                                Severity: <+repeat.item.split("~")[1]>
+                                Package: <+repeat.item.split("~")[2]>
+                                Vulnerable range: <+repeat.item.split("~")[3]>
+                                CVSS score: <+repeat.item.split("~")[4]>
+                                Details: <+repeat.item.split("~")[5]>
 
-                                Severity:
-                                <+repeat.item.split("~")[1]>
+                                Release: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
 
-                                Package:
-                                <+repeat.item.split("~")[2]>
-
-                                Vulnerable range:
-                                <+repeat.item.split("~")[3]>
-
-                                CVSS score:
-                                <+repeat.item.split("~")[4]>
-
-                                Details:
-                                <+repeat.item.split("~")[5]>
-
-                                Release:
-                                <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
-
-                                Pipeline execution:
-                                <+pipeline.executionUrl>
+                                Pipeline execution: <+pipeline.executionUrl>
                             - name: Parent
                               value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
                           timeout: 5m
@@ -855,3 +617,516 @@ pipeline:
                           repeat:
                             items: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS.split("@@@")>
                             maxConcurrency: 5
+    - stage:
+        name: Create_Security_Branch
+        identifier: Create_Security_Branch
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: (<+pipeline.variables.execution_mode> == "NORMAL") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0")
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Create_Git_Branch
+                  identifier: Create_Git_Branch
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
+
+                          REPO_OWNER="manjunathy-harness"
+                          REPO_NAME="cegeka-poc"
+                          BASE_BRANCH="main"
+
+                          if [ -n "${NEW_EPIC_KEY:-}" ] && [ "${NEW_EPIC_KEY}" != "null" ]; then
+                            EPIC_KEY="${NEW_EPIC_KEY}"
+                          else
+                            EPIC_KEY="${EXISTING_EPIC_KEY:-}"
+                          fi
+
+                          if [ -z "$EPIC_KEY" ] || [ "$EPIC_KEY" = "null" ]; then
+                            echo "ERROR: Could not determine Jira Epic key."
+                            exit 1
+                          fi
+
+                          BRANCH_NAME="security/${EPIC_KEY}"
+                          BRANCH_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/tree/${BRANCH_NAME}"
+
+                          echo "Epic: ${EPIC_KEY}"
+                          echo "Branch: ${BRANCH_NAME}"
+
+                          MAIN_RESPONSE="/tmp/github-main-ref.json"
+                          MAIN_HTTP="$(curl -sS -o "$MAIN_RESPONSE" -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BASE_BRANCH}")"
+
+                          if [ "$MAIN_HTTP" != "200" ]; then
+                            echo "ERROR: Failed to read main. HTTP=${MAIN_HTTP}"
+                            cat "$MAIN_RESPONSE"
+                            exit 1
+                          fi
+
+                          MAIN_SHA="$(python3 - <<'PY'
+                          import json
+                          with open('/tmp/github-main-ref.json') as f:
+                              print(json.load(f)['object']['sha'])
+                          PY
+                          )"
+
+                          BRANCH_RESPONSE="/tmp/github-branch-ref.json"
+                          BRANCH_HTTP="$(curl -sS -o "$BRANCH_RESPONSE" -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/heads/${BRANCH_NAME}")"
+
+                          BRANCH_CREATED="false"
+
+                          if [ "$BRANCH_HTTP" = "200" ]; then
+                            echo "Branch already exists."
+                          else
+                            CREATE_BODY="$(python3 - <<PY
+                          import json
+                          print(json.dumps({'ref':'refs/heads/${BRANCH_NAME}','sha':'${MAIN_SHA}'}))
+                          PY
+                          )"
+
+                            CREATE_HTTP="$(curl -sS -o /tmp/github-create-branch.json -w "%{http_code}" \
+                              -X POST \
+                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                              -H "Accept: application/vnd.github+json" \
+                              -H "Content-Type: application/json" \
+                              "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/refs" \
+                              --data "$CREATE_BODY")"
+
+                            if [ "$CREATE_HTTP" != "201" ]; then
+                              echo "ERROR: Branch creation failed. HTTP=${CREATE_HTTP}"
+                              cat /tmp/github-create-branch.json
+                              exit 1
+                            fi
+
+                            BRANCH_CREATED="true"
+                            echo "Branch created successfully."
+                          fi
+
+                          LABEL="security-${EPIC_KEY}"
+                          LABEL_BODY="$(python3 - <<PY
+                          import json
+                          print(json.dumps({'update':{'labels':[{'add':'${LABEL}'}]}}))
+                          PY
+                          )"
+
+                          JIRA_UPDATE_HTTP="$(curl -sS -o /tmp/jira-branch-label.json -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                            -X PUT \
+                            -H "Accept: application/json" \
+                            -H "Content-Type: application/json" \
+                            "${JIRA_API_BASE}/issue/${EPIC_KEY}" \
+                            --data "$LABEL_BODY")"
+
+                          if [ "$JIRA_UPDATE_HTTP" -lt 200 ] || [ "$JIRA_UPDATE_HTTP" -ge 300 ]; then
+                            echo "ERROR: Jira label update failed. HTTP=${JIRA_UPDATE_HTTP}"
+                            cat /tmp/jira-branch-label.json
+                            exit 1
+                          fi
+
+                          echo "Jira label added: ${LABEL}"
+
+                          if [ "$BRANCH_CREATED" = "true" ]; then
+                            COMMENT_BODY="$(python3 - <<PY
+                          import json
+                          url='${BRANCH_URL}'
+                          print(json.dumps({'body':{'type':'doc','version':1,'content':[{'type':'paragraph','content':[{'type':'text','text':'Git Branch: ${BRANCH_NAME}'},{'type':'text','text':' | '},{'type':'text','text':url,'marks':[{'type':'link','attrs':{'href':url}}]}]}]}}}))
+                          PY
+                          )"
+
+                            COMMENT_HTTP="$(curl -sS -o /tmp/jira-branch-comment.json -w "%{http_code}" \
+                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                              -X POST \
+                              -H "Accept: application/json" \
+                              -H "Content-Type: application/json" \
+                              "${JIRA_API_BASE}/issue/${EPIC_KEY}/comment" \
+                              --data "$COMMENT_BODY")"
+
+                            if [ "$COMMENT_HTTP" -lt 200 ] || [ "$COMMENT_HTTP" -ge 300 ]; then
+                              echo "ERROR: Jira branch comment failed. HTTP=${COMMENT_HTTP}"
+                              cat /tmp/jira-branch-comment.json
+                              exit 1
+                            fi
+                          fi
+
+                          export BRANCH_NAME
+                          export EPIC_KEY
+                          export BRANCH_URL
+                    environmentVariables:
+                      - name: GITHUB_TOKEN
+                        type: Secret
+                        value: cegeka-poc2
+                      - name: JIRA_EMAIL
+                        type: String
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                      - name: JIRA_API_BASE
+                        type: String
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: NEW_EPIC_KEY
+                        type: String
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_Jira_Tickets.steps.Create_Parent_Release_Ticket.issue.key>
+                      - name: EXISTING_EPIC_KEY
+                        type: String
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
+                    outputVariables:
+                      - name: BRANCH_NAME
+                        type: String
+                        value: BRANCH_NAME
+                      - name: EPIC_KEY
+                        type: String
+                        value: EPIC_KEY
+                      - name: BRANCH_URL
+                        type: String
+                        value: BRANCH_URL
+                    timeout: 10m
+    - stage:
+        name: PR_Security_Validation
+        identifier: PR_Security_Validation
+        type: CI
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.execution_mode> == "PR_VALIDATE"
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: PR_Context
+                  identifier: PR_Context
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      SOURCE_BRANCH: <+pipeline.variables.pr_source_branch>
+                    command: |-
+                      set -e
+
+                      if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
+                        echo "ERROR: codebase.sourceBranch is empty."
+                        exit 1
+                      fi
+
+                      EPIC_KEY="$(echo "$SOURCE_BRANCH" | sed 's#^security/##')"
+
+                      if [ "$EPIC_KEY" = "$SOURCE_BRANCH" ]; then
+                        echo "ERROR: Source branch must start with security/."
+                        exit 1
+                      fi
+
+                      if ! echo "$EPIC_KEY" | grep -Eq '^[A-Z][A-Z0-9_]+-[0-9]+$'; then
+                        echo "ERROR: Invalid Jira Epic key: $EPIC_KEY"
+                        exit 1
+                      fi
+
+                      RELEASE_NAME="PR-${EPIC_KEY}"
+
+                      echo "Source branch: $SOURCE_BRANCH"
+                      echo "Epic key: $EPIC_KEY"
+
+                      export SOURCE_BRANCH
+                      export EPIC_KEY
+                      export RELEASE_NAME
+                    outputVariables:
+                      - name: SOURCE_BRANCH
+                        type: String
+                        value: SOURCE_BRANCH
+                      - name: EPIC_KEY
+                        type: String
+                        value: EPIC_KEY
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+              - step:
+                  type: Run
+                  name: Install_Dependencies
+                  identifier: PR_Install_Dependencies
+                  spec:
+                    shell: Sh
+                    command: |-
+                      cd sample-app
+                      npm install --package-lock-only
+              - step:
+                  type: Owasp
+                  name: OWASP_Dependency_Check
+                  identifier: PR_OWASP_Dependency_Check
+                  spec:
+                    mode: orchestration
+                    config: default
+                    target:
+                      type: repository
+                      name: <+codebase.repoUrl>
+                      variant: <+codebase.branch>
+                      workspace: sample-app
+                    advanced:
+                      log:
+                        level: info
+                    privileged: true
+              - step:
+                  type: Run
+                  name: Run_NPM_Audit
+                  identifier: PR_Run_NPM_Audit
+                  spec:
+                    shell: Sh
+                    command: |-
+                      cd sample-app
+                      npm audit --json > /harness/npm-audit.json || true
+                      cat /harness/npm-audit.json
+              - step:
+                  type: Run
+                  name: Parse_Vulnerabilities
+                  identifier: PR_Parse_Vulnerabilities
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      RELEASE_NAME: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
+                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
+                    command: |-
+                      set -e
+
+                      python3 scripts/parse_npm_audit.py \
+                        /harness/npm-audit.json \
+                        "$RELEASE_NAME" \
+                        --min-severity "$MIN_SEVERITY" \
+                        > /harness/pr_vuln_vars.env
+
+                      cat /harness/pr_vuln_vars.env
+
+                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
+                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
+                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
+
+                      echo "VULN_COUNT=$VULN_COUNT"
+
+                      export RELEASE_NAME
+                      export VULN_COUNT
+                      export VULN_ITEMS
+                    outputVariables:
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+                      - name: VULN_COUNT
+                        type: String
+                        value: VULN_COUNT
+                      - name: VULN_ITEMS
+                        type: String
+                        value: VULN_ITEMS
+              - step:
+                  type: Run
+                  name: Close_Epic_On_No_Vulnerabilities
+                  identifier: Close_Epic_On_No_Vulnerabilities
+                  when:
+                    stageStatus: Success
+                  spec:
+                    shell: Sh
+                    command: |-
+                      set -e
+
+                      EPIC_KEY="<+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.EPIC_KEY>"
+
+                      TRANSITIONS_FILE="/tmp/jira-transitions.json"
+                      HTTP_CODE="$(curl -sS -o "$TRANSITIONS_FILE" -w "%{http_code}" \
+                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                        -H "Accept: application/json" \
+                        "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions")"
+
+                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                        echo "ERROR: Jira transitions failed. HTTP=${HTTP_CODE}"
+                        cat "$TRANSITIONS_FILE"
+                        exit 1
+                      fi
+
+                      TRANSITION_ID="$(python3 - <<'PY'
+                      import json
+                      with open('/tmp/jira-transitions.json') as f:
+                          data=json.load(f)
+                      for t in data.get('transitions',[]):
+                          if (t.get('name') or '').lower() == 'done' or ((t.get('to') or {}).get('name') or '').lower() == 'done':
+                              print(t.get('id',''))
+                              break
+                      PY
+                      )"
+
+                      if [ -z "$TRANSITION_ID" ]; then
+                        echo "No Done transition found."
+                        cat "$TRANSITIONS_FILE"
+                        exit 1
+                      fi
+
+                      BODY="$(python3 - <<PY
+                      import json
+                      print(json.dumps({'transition':{'id':'${TRANSITION_ID}'}}))
+                      PY
+                      )"
+
+                      HTTP_CODE="$(curl -sS -o /tmp/jira-transition-response.json -w "%{http_code}" \
+                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                        -X POST \
+                        -H "Accept: application/json" \
+                        -H "Content-Type: application/json" \
+                        "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions" \
+                        --data "$BODY")"
+
+                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                        echo "ERROR: Failed to close Jira Epic. HTTP=${HTTP_CODE}"
+                        cat /tmp/jira-transition-response.json
+                        exit 1
+                      fi
+
+                      echo "Jira Epic ${EPIC_KEY} transitioned to Done."
+                    environmentVariables:
+                      - name: JIRA_API_BASE
+                        type: String
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: JIRA_EMAIL
+                        type: String
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                    timeout: 10m
+    - stage:
+        name: PR_Merge_Closure
+        identifier: PR_Merge_Closure
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.execution_mode> == "PR_MERGE"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Close_Epic_When_PR_Merged
+                  identifier: Close_Epic_When_PR_Merged
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
+
+                          REPO_OWNER="manjunathy-harness"
+                          REPO_NAME="cegeka-poc"
+
+                          PR_FILE="/tmp/github-pr.json"
+                          HTTP_CODE="$(curl -sS -o "$PR_FILE" -w "%{http_code}" \
+                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR_NUMBER}")"
+
+                          if [ "$HTTP_CODE" != "200" ]; then
+                            echo "ERROR: Failed to read PR #${PR_NUMBER}. HTTP=${HTTP_CODE}"
+                            cat "$PR_FILE"
+                            exit 1
+                          fi
+
+                          MERGED="$(python3 - <<'PY'
+                          import json
+                          with open('/tmp/github-pr.json') as f:
+                              print(str(json.load(f).get('merged',False)).lower())
+                          PY
+                          )"
+
+                          EPIC_KEY="$(echo "$SOURCE_BRANCH" | sed 's#^security/##')"
+
+                          echo "PR #${PR_NUMBER} merged=${MERGED}"
+                          echo "Epic=${EPIC_KEY}"
+
+                          if [ "$MERGED" != "true" ]; then
+                            echo "PR closed without merge. Epic remains open."
+                            exit 0
+                          fi
+
+                          TRANSITIONS_FILE="/tmp/jira-transitions.json"
+                          HTTP_CODE="$(curl -sS -o "$TRANSITIONS_FILE" -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                            -H "Accept: application/json" \
+                            "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions")"
+
+                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                            echo "ERROR: Jira transitions failed. HTTP=${HTTP_CODE}"
+                            cat "$TRANSITIONS_FILE"
+                            exit 1
+                          fi
+
+                          TRANSITION_ID="$(python3 - <<'PY'
+                          import json
+                          with open('/tmp/jira-transitions.json') as f:
+                              data=json.load(f)
+                          for t in data.get('transitions',[]):
+                              if (t.get('name') or '').lower() == 'done' or ((t.get('to') or {}).get('name') or '').lower() == 'done':
+                                  print(t.get('id',''))
+                                  break
+                          PY
+                          )"
+
+                          if [ -z "$TRANSITION_ID" ]; then
+                            echo "No Done transition found."
+                            cat "$TRANSITIONS_FILE"
+                            exit 1
+                          fi
+
+                          BODY="$(python3 - <<PY
+                          import json
+                          print(json.dumps({'transition':{'id':'${TRANSITION_ID}'}}))
+                          PY
+                          )"
+
+                          HTTP_CODE="$(curl -sS -o /tmp/jira-transition-response.json -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                            -X POST \
+                            -H "Accept: application/json" \
+                            -H "Content-Type: application/json" \
+                            "${JIRA_API_BASE}/issue/${EPIC_KEY}/transitions" \
+                            --data "$BODY")"
+
+                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                            echo "ERROR: Failed to close Jira Epic ${EPIC_KEY}. HTTP=${HTTP_CODE}"
+                            cat /tmp/jira-transition-response.json
+                            exit 1
+                          fi
+
+                          echo "PR #${PR_NUMBER} merged. Jira Epic ${EPIC_KEY} transitioned to Done."
+                    environmentVariables:
+                      - name: GITHUB_TOKEN
+                        type: Secret
+                        value: cegeka-poc2
+                      - name: PR_NUMBER
+                        type: String
+                        value: <+pipeline.variables.pr_number>
+                      - name: SOURCE_BRANCH
+                        type: String
+                        value: <+pipeline.variables.pr_source_branch>
+                      - name: JIRA_API_BASE
+                        type: String
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: JIRA_EMAIL
+                        type: String
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                    timeout: 10m
