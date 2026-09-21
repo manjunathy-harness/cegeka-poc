@@ -589,39 +589,49 @@ pipeline:
                               value: <+pipeline.variables.jira_remediation_label>
                           timeout: 5m
               - step:
-                  type: Run
+                  type: ShellScript
                   name: Resolve_Active_Remediation_Epic
                   identifier: Resolve_Active_Remediation_Epic
                   spec:
-                    shell: Sh
-                    envVariables:
-                      NEW_EPIC_KEY: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_New_Remediation_Epic.steps.Create_Parent_Release_Ticket.issue.key>
-                      EXISTING_EPIC_KEY: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
-                      EXISTING_EPIC_STATUS: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS>
-                    command: |-
-                      set -e
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
 
-                      NEW_REMEDIATION_CYCLE="false"
-                      ACTIVE_EPIC_KEY="${EXISTING_EPIC_KEY:-}"
+                          NEW_REMEDIATION_CYCLE="false"
+                          ACTIVE_EPIC_KEY="${EXISTING_EPIC_KEY:-}"
 
-                      if [ -n "${NEW_EPIC_KEY:-}" ] && [ "${NEW_EPIC_KEY}" != "null" ]; then
-                        ACTIVE_EPIC_KEY="$NEW_EPIC_KEY"
-                        NEW_REMEDIATION_CYCLE="true"
-                      elif [ "${EXISTING_EPIC_STATUS:-}" = "Done" ]; then
-                        echo "ERROR: Existing Epic is Done but no new Epic was created."
-                        exit 1
-                      fi
+                          if [ -n "${NEW_EPIC_KEY:-}" ] && [ "${NEW_EPIC_KEY}" != "null" ]; then
+                            ACTIVE_EPIC_KEY="$NEW_EPIC_KEY"
+                            NEW_REMEDIATION_CYCLE="true"
+                          elif [ "${EXISTING_EPIC_STATUS:-}" = "Done" ]; then
+                            echo "ERROR: Existing Epic is Done but no new Epic was created."
+                            exit 1
+                          fi
 
-                      if [ -z "$ACTIVE_EPIC_KEY" ] || [ "$ACTIVE_EPIC_KEY" = "null" ]; then
-                        echo "ERROR: Could not resolve active remediation Epic."
-                        exit 1
-                      fi
+                          if [ -z "$ACTIVE_EPIC_KEY" ] || [ "$ACTIVE_EPIC_KEY" = "null" ]; then
+                            echo "ERROR: Could not resolve active remediation Epic."
+                            exit 1
+                          fi
 
-                      echo "ACTIVE_EPIC_KEY=$ACTIVE_EPIC_KEY"
-                      echo "NEW_REMEDIATION_CYCLE=$NEW_REMEDIATION_CYCLE"
+                          echo "ACTIVE_EPIC_KEY=$ACTIVE_EPIC_KEY"
+                          echo "NEW_REMEDIATION_CYCLE=$NEW_REMEDIATION_CYCLE"
 
-                      export ACTIVE_EPIC_KEY
-                      export NEW_REMEDIATION_CYCLE
+                          export ACTIVE_EPIC_KEY
+                          export NEW_REMEDIATION_CYCLE
+                    environmentVariables:
+                      - name: NEW_EPIC_KEY
+                        type: String
+                        value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_New_Remediation_Epic.steps.Create_Parent_Release_Ticket.issue.key>
+                      - name: EXISTING_EPIC_KEY
+                        type: String
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
+                      - name: EXISTING_EPIC_STATUS
+                        type: String
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS>
                     outputVariables:
                       - name: ACTIVE_EPIC_KEY
                         type: String
@@ -631,102 +641,123 @@ pipeline:
                         value: NEW_REMEDIATION_CYCLE
                     timeout: 10m
               - step:
-                  type: Run
+                  type: ShellScript
                   name: Lookup_Existing_Vulnerability_Tickets
                   identifier: Lookup_Existing_Vulnerability_Tickets
                   spec:
-                    shell: Sh
-                    envVariables:
-                      JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
-                      JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
-                      JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
-                      EPIC_KEY: <+execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.ACTIVE_EPIC_KEY>
-                      VULN_ITEMS: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>
-                    command: |-
-                      set -e
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
 
-                      echo "=============================================="
-                      echo "LOOKING UP EXISTING VULNERABILITY TICKETS"
-                      echo "=============================================="
-                      echo "EPIC=$EPIC_KEY"
+                          echo "=============================================="
+                          echo "LOOKING UP EXISTING VULNERABILITY TICKETS"
+                          echo "=============================================="
+                          echo "EPIC=$EPIC_KEY"
 
-                      RESPONSE_FILE="/tmp/jira-child-response.json"
-                      SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Task AND parent = ${EPIC_KEY} ORDER BY created DESC"
+                          RESPONSE_FILE="/tmp/jira-child-response.json"
+                          SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Task AND parent = ${EPIC_KEY} ORDER BY created DESC"
 
-                      REQUEST_BODY="$(python3 - <<PY
-                      import json
-                      import os
-                      print(json.dumps({
-                          'jql': os.environ['SEARCH_JQL'],
-                          'maxResults': 100,
-                          'fields': ['summary','status','parent','issuetype']
-                      }))
-                      PY
-                      )"
+                          REQUEST_BODY="$(python3 - <<PY
+                          import json
+                          import os
+                          print(json.dumps({
+                              'jql': os.environ['SEARCH_JQL'],
+                              'maxResults': 100,
+                              'fields': ['summary','status','parent','issuetype']
+                          }))
+                          PY
+                          )"
 
-                      HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
-                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                        -X POST \
-                        -H "Accept: application/json" \
-                        -H "Content-Type: application/json" \
-                        "${JIRA_API_BASE}/search/jql" \
-                        --data "$REQUEST_BODY")"
+                          HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                            -X POST \
+                            -H "Accept: application/json" \
+                            -H "Content-Type: application/json" \
+                            "${JIRA_API_BASE}/search/jql" \
+                            --data "$REQUEST_BODY")"
 
-                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira child-ticket search failed. HTTP=${HTTP_CODE}"
-                        cat "$RESPONSE_FILE"
-                        exit 1
-                      fi
+                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                            echo "ERROR: Jira child-ticket search failed. HTTP=${HTTP_CODE}"
+                            cat "$RESPONSE_FILE"
+                            exit 1
+                          fi
 
-                      export RESPONSE_FILE
-                      export VULN_ITEMS
+                          export RESPONSE_FILE
+                          export VULN_ITEMS
 
-                      NEW_ITEMS="$(python3 - <<'PY'
-                      import json
-                      import os
+                          NEW_ITEMS="$(python3 - <<'PY'
+                          import json
+                          import os
 
-                      with open(os.environ['RESPONSE_FILE'], 'r', encoding='utf-8') as f:
-                          data = json.load(f)
+                          with open(os.environ['RESPONSE_FILE'], 'r', encoding='utf-8') as f:
+                              data = json.load(f)
 
-                      existing = set()
-                      for issue in data.get('issues', []):
-                          summary = ((issue.get('fields') or {}).get('summary') or '').strip().lower()
-                          if '] ' in summary:
-                              summary = summary.split('] ', 1)[1]
-                          if ' in ' in summary:
-                              advisory, package_name = summary.split(' in ', 1)
-                              existing.add((advisory.strip(), package_name.strip()))
-                          else:
-                              existing.add((summary, ''))
+                          existing = set()
+                          for issue in data.get('issues', []):
+                              summary = ((issue.get('fields') or {}).get('summary') or '').strip().lower()
+                              if '] ' in summary:
+                                  summary = summary.split('] ', 1)[1]
+                              if ' in ' in summary:
+                                  advisory, package_name = summary.split(' in ', 1)
+                                  existing.add((advisory.strip(), package_name.strip()))
+                              else:
+                                  existing.add((summary, ''))
 
-                      raw_items = [x for x in os.environ.get('VULN_ITEMS','').split('@@@') if x.strip()]
-                      new_items = []
+                          raw_items = [x for x in os.environ.get('VULN_ITEMS','').split('@@@') if x.strip()]
+                          new_items = []
 
-                      for item in raw_items:
-                          parts = item.split('~')
-                          if len(parts) < 6:
-                              continue
-                          advisory = parts[0].strip()
-                          package_name = parts[2].strip()
-                          key = (advisory.lower(), package_name.lower())
-                          if key not in existing:
-                              new_items.append(item)
+                          for item in raw_items:
+                              parts = item.split('~')
+                              if len(parts) < 6:
+                                  continue
+                              advisory = parts[0].strip()
+                              package_name = parts[2].strip()
+                              key = (advisory.lower(), package_name.lower())
+                              if key not in existing:
+                                  new_items.append(item)
 
-                      print('@@@'.join(new_items))
-                      PY
-                      )"
+                          print('@@@'.join(new_items))
+                          PY
+                          )"
 
-                      NEW_COUNT=0
-                      if [ -n "$NEW_ITEMS" ]; then
-                        NEW_COUNT="$(printf '%s' "$NEW_ITEMS" | awk -F '@@@' '{print NF}')"
-                      fi
+                          if [ -n "$NEW_ITEMS" ]; then
+                            NEW_COUNT="$(printf '%s' "$NEW_ITEMS" | awk -F '@@@' '{print NF}')"
+                          else
+                            NEW_COUNT="0"
+                            # Harness evaluates repeat.items before the step condition.
+                            # Keep the output non-null so an empty vulnerability set does not
+                            # cause "Loop items list cannot be null" during pipeline planning.
+                            NEW_ITEMS="__NO_NEW_VULNS__"
+                          fi
 
-                      echo "NEW_VULN_COUNT=$NEW_COUNT"
-                      echo "NEW_VULN_ITEMS=$NEW_ITEMS"
+                          echo "NEW_VULN_COUNT=$NEW_COUNT"
+                          echo "NEW_VULN_ITEMS=$NEW_ITEMS"
 
-                      export NEW_VULN_COUNT="$NEW_COUNT"
-                      export NEW_VULN_ITEMS="$NEW_ITEMS"
+                          export NEW_VULN_COUNT="$NEW_COUNT"
+                          export NEW_VULN_ITEMS="$NEW_ITEMS"
+                    environmentVariables:
+                      - name: JIRA_API_BASE
+                        type: String
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: JIRA_EMAIL
+                        type: String
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                      - name: JIRA_PROJECT_KEY
+                        type: String
+                        value: <+pipeline.variables.jira_project_key>
+                      - name: EPIC_KEY
+                        type: String
+                        value: <+execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.ACTIVE_EPIC_KEY>
+                      - name: VULN_ITEMS
+                        type: String
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>
                     outputVariables:
                       - name: NEW_VULN_COUNT
                         type: String
@@ -776,7 +807,7 @@ pipeline:
                             type: MarkAsSuccess
                   strategy:
                     repeat:
-                      items: <+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_ITEMS.split("@@@")>
+                      items: (<+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_ITEMS>).split("@@@")
                       maxConcurrency: 5
     - stage:
         name: Create_Security_Branch
