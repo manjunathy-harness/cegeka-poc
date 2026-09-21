@@ -282,8 +282,25 @@ pipeline:
                   spec:
                     shell: Sh
                     command: |-
+                      set -e
+
+                      echo "=============================================="
+                      echo "JAVA / MAVEN VERSION"
+                      echo "=============================================="
+                      java -version
+                      javac -version
+                      mvn -version
+
                       cd sample-app
-                      mvn -B clean test
+
+                      echo "=============================================="
+                      echo "BUILDING WITH JAVA 17"
+                      echo "=============================================="
+
+                      mvn -B clean test \
+                        -Dmaven.compiler.release=17 \
+                        -Dmaven.compiler.source=17 \
+                        -Dmaven.compiler.target=17
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
@@ -1058,8 +1075,25 @@ pipeline:
                   spec:
                     shell: Sh
                     command: |-
+                      set -e
+
+                      echo "=============================================="
+                      echo "JAVA / MAVEN VERSION"
+                      echo "=============================================="
+                      java -version
+                      javac -version
+                      mvn -version
+
                       cd sample-app
-                      mvn -B clean test
+
+                      echo "=============================================="
+                      echo "BUILDING WITH JAVA 17"
+                      echo "=============================================="
+
+                      mvn -B clean test \
+                        -Dmaven.compiler.release=17 \
+                        -Dmaven.compiler.source=17 \
+                        -Dmaven.compiler.target=17
               - step:
                   type: Owasp
                   name: OWASP_Dependency_Check
