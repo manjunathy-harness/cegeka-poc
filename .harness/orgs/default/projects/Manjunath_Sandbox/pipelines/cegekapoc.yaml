@@ -330,7 +330,7 @@ pipeline:
                       echo "BUILD CONTAINER WITH JIB"
                       echo "=============================================="
 
-                      mvn -B jib:buildTar \
+                      mvn -B com.google.cloud.tools:jib-maven-plugin:3.5.2:buildTar \
                         -Djib.from.image=eclipse-temurin:17-jre
 
                       test -f target/jib-image.tar
@@ -1230,7 +1230,7 @@ pipeline:
                       echo "BUILD CONTAINER WITH JIB"
                       echo "=============================================="
 
-                      mvn -B jib:buildTar \
+                      mvn -B com.google.cloud.tools:jib-maven-plugin:3.5.2:buildTar \
                         -Djib.from.image=eclipse-temurin:17-jre
 
                       test -f target/jib-image.tar
