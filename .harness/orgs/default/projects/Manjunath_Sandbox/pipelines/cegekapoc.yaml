@@ -820,6 +820,27 @@ pipeline:
                         script: |-
                           set -e
 
+                          if ! command -v python3 >/dev/null 2>&1; then
+                            echo "python3 is not installed on this delegate. Installing it..."
+
+                            if command -v apt-get >/dev/null 2>&1; then
+                              export DEBIAN_FRONTEND=noninteractive
+                              apt-get update -qq
+                              apt-get install -y -qq python3
+                            elif command -v dnf >/dev/null 2>&1; then
+                              dnf install -y python3
+                            elif command -v yum >/dev/null 2>&1; then
+                              yum install -y python3
+                            elif command -v apk >/dev/null 2>&1; then
+                              apk add --no-cache python3
+                            else
+                              echo "ERROR: No supported package manager found to install python3."
+                              exit 1
+                            fi
+                          fi
+
+                          python3 --version
+
                           echo "=============================================="
                           echo "LOOKING UP EXISTING VULNERABILITY TICKETS"
                           echo "=============================================="
@@ -1508,6 +1529,27 @@ pipeline:
                       spec:
                         script: |-
                           set -e
+
+                          if ! command -v python3 >/dev/null 2>&1; then
+                            echo "python3 is not installed on this delegate. Installing it..."
+
+                            if command -v apt-get >/dev/null 2>&1; then
+                              export DEBIAN_FRONTEND=noninteractive
+                              apt-get update -qq
+                              apt-get install -y -qq python3
+                            elif command -v dnf >/dev/null 2>&1; then
+                              dnf install -y python3
+                            elif command -v yum >/dev/null 2>&1; then
+                              yum install -y python3
+                            elif command -v apk >/dev/null 2>&1; then
+                              apk add --no-cache python3
+                            else
+                              echo "ERROR: No supported package manager found to install python3."
+                              exit 1
+                            fi
+                          fi
+
+                          python3 --version
 
                           REPO_OWNER="manjunathy-harness"
                           REPO_NAME="cegeka-poc"
