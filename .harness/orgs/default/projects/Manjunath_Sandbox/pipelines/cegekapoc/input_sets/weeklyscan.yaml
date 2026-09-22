@@ -1,0 +1,15 @@
+inputSet:
+  name: weekly-scan
+  identifier: weeklyscan
+  orgIdentifier: default
+  projectIdentifier: Manjunath_Sandbox
+  pipeline:
+    identifier: cegekapoc
+    properties:
+      ci:
+        codebase:
+          build: <+input>
+    variables:
+      - name: execution_mode
+        type: String
+        value: WEEKLY_SCAN
