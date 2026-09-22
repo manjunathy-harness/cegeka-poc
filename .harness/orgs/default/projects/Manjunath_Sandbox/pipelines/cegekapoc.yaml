@@ -280,6 +280,7 @@ pipeline:
                   name: Build_And_Test
                   identifier: Build_And_Test
                   spec:
+                    image: maven:3.9.9-eclipse-temurin-17
                     shell: Sh
                     command: |-
                       set -e
@@ -1075,6 +1076,7 @@ pipeline:
                   name: Build_And_Test
                   identifier: PR_Build_And_Test
                   spec:
+                    image: maven:3.9.9-eclipse-temurin-17
                     shell: Sh
                     command: |-
                       set -e
