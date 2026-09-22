@@ -285,46 +285,18 @@ pipeline:
                       set -e
 
                       echo "=============================================="
-                      echo "SETTING UP JAVA 17"
-                      echo "=============================================="
-
-                      JDK_DIR="/tmp/temurin-17"
-
-                      if [ ! -x "$JDK_DIR/bin/java" ]; then
-                        echo "Downloading Temurin Java 17..."
-                        curl -fsSL \
-                          -o /tmp/temurin-17.tar.gz \
-                          "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
-                        rm -rf "$JDK_DIR"
-                        mkdir -p "$JDK_DIR"
-                        tar -xzf /tmp/temurin-17.tar.gz --strip-components=1 -C "$JDK_DIR"
-                        rm -f /tmp/temurin-17.tar.gz
-                      fi
-
-                      export JAVA_HOME="$JDK_DIR"
-                      export PATH="$JAVA_HOME/bin:$PATH"
-
-                      echo "JAVA_HOME=$JAVA_HOME"
-                      echo "=============================================="
-                      echo "JAVA VERSION"
+                      echo "JAVA / MAVEN VERSION"
                       echo "=============================================="
                       java -version
-
-                      echo "=============================================="
-                      echo "JAVAC VERSION"
-                      echo "=============================================="
                       javac -version
-
-                      echo "=============================================="
-                      echo "MAVEN VERSION"
-                      echo "=============================================="
                       mvn -version
+
+                      cd sample-app
 
                       echo "=============================================="
                       echo "BUILDING WITH JAVA 17"
                       echo "=============================================="
 
-                      cd sample-app
                       mvn -B clean test \
                         -Dmaven.compiler.release=17 \
                         -Dmaven.compiler.source=17 \
@@ -359,7 +331,9 @@ pipeline:
                       echo "Running OWASP Dependency-Check for Maven dependencies"
                       mvn -B org.owasp:dependency-check-maven:13.0.0:check \
                         -DnvdApiKey="$NVD_API_KEY" \
-                        -DnvdMaxRetryCount=3 \
+                        -DnvdMaxRetryCount=10 \
+                        -DnvdApiDelay=5000 \
+                        -DnvdApiResultsPerPage=2000 \
                         -Dformat=JSON \
                         -DprettyPrint=true \
                         -DfailBuildOnCVSS=11 \
@@ -1106,46 +1080,18 @@ pipeline:
                       set -e
 
                       echo "=============================================="
-                      echo "SETTING UP JAVA 17"
-                      echo "=============================================="
-
-                      JDK_DIR="/tmp/temurin-17"
-
-                      if [ ! -x "$JDK_DIR/bin/java" ]; then
-                        echo "Downloading Temurin Java 17..."
-                        curl -fsSL \
-                          -o /tmp/temurin-17.tar.gz \
-                          "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
-                        rm -rf "$JDK_DIR"
-                        mkdir -p "$JDK_DIR"
-                        tar -xzf /tmp/temurin-17.tar.gz --strip-components=1 -C "$JDK_DIR"
-                        rm -f /tmp/temurin-17.tar.gz
-                      fi
-
-                      export JAVA_HOME="$JDK_DIR"
-                      export PATH="$JAVA_HOME/bin:$PATH"
-
-                      echo "JAVA_HOME=$JAVA_HOME"
-                      echo "=============================================="
-                      echo "JAVA VERSION"
+                      echo "JAVA / MAVEN VERSION"
                       echo "=============================================="
                       java -version
-
-                      echo "=============================================="
-                      echo "JAVAC VERSION"
-                      echo "=============================================="
                       javac -version
-
-                      echo "=============================================="
-                      echo "MAVEN VERSION"
-                      echo "=============================================="
                       mvn -version
+
+                      cd sample-app
 
                       echo "=============================================="
                       echo "BUILDING WITH JAVA 17"
                       echo "=============================================="
 
-                      cd sample-app
                       mvn -B clean test \
                         -Dmaven.compiler.release=17 \
                         -Dmaven.compiler.source=17 \
@@ -1180,7 +1126,9 @@ pipeline:
                       echo "Running OWASP Dependency-Check for Maven dependencies"
                       mvn -B org.owasp:dependency-check-maven:13.0.0:check \
                         -DnvdApiKey="$NVD_API_KEY" \
-                        -DnvdMaxRetryCount=3 \
+                        -DnvdMaxRetryCount=10 \
+                        -DnvdApiDelay=5000 \
+                        -DnvdApiResultsPerPage=2000 \
                         -Dformat=JSON \
                         -DprettyPrint=true \
                         -DfailBuildOnCVSS=11 \
