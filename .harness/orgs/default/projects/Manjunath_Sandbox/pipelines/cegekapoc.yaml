@@ -483,6 +483,31 @@ pipeline:
                           f.write(f"VULN_COUNT={len(items)}\n")
                           f.write(f"VULN_ITEMS={vuln_items}\n")
                       PY
+
+                      # The Python process cannot export variables into the
+                      # parent Harness shell. Read the generated values back here
+                      # and export them so Harness can capture them as step outputs.
+                      VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      if ! echo "$VULN_COUNT" | grep -Eq '^[0-9]+$'; then
+                        echo "ERROR: VULN_COUNT is not a numeric value: [$VULN_COUNT]"
+                        exit 1
+                      fi
+
+                      HAS_VULNS="false"
+                      if [ "$VULN_COUNT" -gt 0 ]; then
+                        HAS_VULNS="true"
+                      fi
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "VULN_COUNT=$VULN_COUNT"
+                      echo "HAS_VULNS=$HAS_VULNS"
+
+                      export RELEASE_NAME
+                      export VULN_COUNT
+                      export VULN_ITEMS
+                      export HAS_VULNS
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
@@ -493,6 +518,9 @@ pipeline:
                       - name: VULN_ITEMS
                         type: String
                         value: VULN_ITEMS
+                      - name: HAS_VULNS
+                        type: String
+                        value: HAS_VULNS
               - step:
                   type: Run
                   name: Generate_Release_Label
@@ -524,7 +552,7 @@ pipeline:
                   identifier: Lookup_Existing_Jira_Epic
                   when:
                     stageStatus: Success
-                    condition: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0"
+                    condition: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true"
                   spec:
                     shell: Sh
                     envVariables:
@@ -689,7 +717,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.variables.execution_mode> == "WEEKLY_SCAN") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0")
+          condition: (<+pipeline.variables.execution_mode> == "WEEKLY_SCAN") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -955,7 +983,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.variables.execution_mode> == "WEEKLY_SCAN") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> != "0") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+pipeline.variables.execution_mode> == "WEEKLY_SCAN") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
@@ -1385,6 +1413,31 @@ pipeline:
                           f.write(f"VULN_COUNT={len(items)}\n")
                           f.write(f"VULN_ITEMS={vuln_items}\n")
                       PY
+
+                      # The Python process cannot export variables into the
+                      # parent Harness shell. Read the generated values back here
+                      # and export them so Harness can capture them as step outputs.
+                      VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      if ! echo "$VULN_COUNT" | grep -Eq '^[0-9]+$'; then
+                        echo "ERROR: VULN_COUNT is not a numeric value: [$VULN_COUNT]"
+                        exit 1
+                      fi
+
+                      HAS_VULNS="false"
+                      if [ "$VULN_COUNT" -gt 0 ]; then
+                        HAS_VULNS="true"
+                      fi
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
+                      echo "VULN_COUNT=$VULN_COUNT"
+                      echo "HAS_VULNS=$HAS_VULNS"
+
+                      export RELEASE_NAME
+                      export VULN_COUNT
+                      export VULN_ITEMS
+                      export HAS_VULNS
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
@@ -1395,6 +1448,9 @@ pipeline:
                       - name: VULN_ITEMS
                         type: String
                         value: VULN_ITEMS
+                      - name: HAS_VULNS
+                        type: String
+                        value: HAS_VULNS
               - step:
                   type: Run
                   name: PR_Vulnerability_Gate
@@ -1407,18 +1463,20 @@ pipeline:
                       set -e
 
                       VULN_COUNT="<+execution.steps.PR_Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+                      HAS_VULNS="<+execution.steps.PR_Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
 
                       echo "=============================================="
                       echo "PR SECURITY GATE"
                       echo "=============================================="
                       echo "Vulnerabilities found: ${VULN_COUNT}"
+                      echo "HAS_VULNS: ${HAS_VULNS}"
 
-                      if [ -z "$VULN_COUNT" ] || [ "$VULN_COUNT" = "null" ]; then
-                        echo "ERROR: Vulnerability count was not produced by the parser."
+                      if [ -z "$VULN_COUNT" ] || [ "$VULN_COUNT" = "null" ] || [ "$HAS_VULNS" = "null" ] || [ -z "$HAS_VULNS" ]; then
+                        echo "ERROR: Vulnerability outputs were not produced by the parser."
                         exit 1
                       fi
 
-                      if [ "$VULN_COUNT" != "0" ]; then
+                      if [ "$HAS_VULNS" = "true" ]; then
                         echo "SECURITY GATE FAILED."
                         echo "The PR contains vulnerabilities."
                         echo "This PR execution will not create Jira tickets or a security branch."
