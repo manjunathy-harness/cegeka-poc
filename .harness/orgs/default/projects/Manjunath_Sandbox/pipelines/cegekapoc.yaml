@@ -303,52 +303,76 @@ pipeline:
                         -Dmaven.compiler.source=17 \
                         -Dmaven.compiler.target=17
               - step:
-                  type: Owasp
-                  name: OWASP_Dependency_Check
-                  identifier: OWASP_Dependency_Check
+                  type: Run
+                  name: Build_Container_With_Jib
+                  identifier: Build_Container_With_Jib
                   spec:
-                    mode: orchestration
-                    config: default
-                    target:
-                      type: repository
-                      name: <+codebase.repoUrl>
-                      variant: <+codebase.branch>
-                      workspace: sample-app
-                    advanced:
-                      log:
-                        level: info
-                    privileged: true
+                    image: maven:3.9.9-eclipse-temurin-17
+                    shell: Bash
+                    command: |-
+                      set -e
+
+                      echo "=============================================="
+                      echo "JAVA / MAVEN VERSION"
+                      echo "=============================================="
+                      java -version
+                      javac -version
+                      mvn -version
+
+                      echo "=============================================="
+                      echo "BUILD APPLICATION"
+                      echo "=============================================="
+                      cd sample-app
+
+                      mvn -B clean test
+
+                      echo "=============================================="
+                      echo "BUILD CONTAINER WITH JIB"
+                      echo "=============================================="
+
+                      mvn -B jib:buildTar \
+                        -Djib.from.image=eclipse-temurin:17-jre
+
+                      test -f target/jib-image.tar
+
+                      echo "Jib image created successfully:"
+                      ls -lh target/jib-image.tar
               - step:
                   type: Run
-                  name: Run_Maven_Dependency_Check
-                  identifier: Run_Maven_Dependency_Check
+                  name: Trivy_Scan
+                  identifier: Trivy_Scan
                   spec:
-                    envVariables:
-                      NVD_API_KEY: <+secrets.getValue("cegeka_nvd_api_key")>
+                    image: aquasec/trivy:0.74.0
                     shell: Sh
                     command: |-
                       set -e
-                      cd sample-app
-                      echo "Running OWASP Dependency-Check for Maven dependencies"
-                      mvn -B org.owasp:dependency-check-maven:13.0.0:check \
-                        -DnvdApiKey="$NVD_API_KEY" \
-                        -DnvdMaxRetryCount=10 \
-                        -DnvdApiDelay=5000 \
-                        -DnvdApiResultsPerPage=2000 \
-                        -Dformat=JSON \
-                        -DprettyPrint=true \
-                        -DfailBuildOnCVSS=11 \
-                        -DskipTestScope=true
-                      test -f target/dependency-check-report.json
-                      cp target/dependency-check-report.json /harness/dependency-check-report.json
-                      echo "Dependency-Check report generated successfully."
-                      ls -lh /harness/dependency-check-report.json
+
+                      echo "=============================================="
+                      echo "TRIVY VERSION"
+                      echo "=============================================="
+                      trivy version
+
+                      echo "=============================================="
+                      echo "TRIVY IMAGE SCAN"
+                      echo "=============================================="
+
+                      trivy image \
+                        --input /harness/sample-app/target/jib-image.tar \
+                        --scanners vuln \
+                        --format json \
+                        --output /harness/trivy-report.json
+
+                      test -f /harness/trivy-report.json
+
+                      echo "Trivy report generated:"
+                      ls -lh /harness/trivy-report.json
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
                   identifier: Parse_Vulnerabilities
                   spec:
-                    shell: Sh
+                    image: python:3.11
+                    shell: Bash
                     envVariables:
                       RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
@@ -356,23 +380,98 @@ pipeline:
                       set -e
 
                       echo "=============================================="
-                      echo "PARSING VULNERABILITIES"
+                      echo "PARSING TRIVY VULNERABILITIES"
                       echo "=============================================="
 
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "MIN_SEVERITY=$MIN_SEVERITY"
+                      python3 - <<'PY'
+                      import json
+                      import os
+                      import re
 
-                      SEVERITY_FLAG=""
+                      REPORT = "/harness/trivy-report.json"
 
-                      if [ -n "$MIN_SEVERITY" ]; then
-                        SEVERITY_FLAG="--min-severity $MIN_SEVERITY"
-                      fi
+                      SEVERITY_ORDER = {
+                          "unknown": 0,
+                          "low": 1,
+                          "medium": 2,
+                          "high": 3,
+                          "critical": 4,
+                      }
 
-                      python3 scripts/parse_maven_dependency_check.py \
-                        /harness/dependency-check-report.json \
-                        "$RELEASE_NAME" \
-                        $SEVERITY_FLAG \
-                        > /harness/vuln_vars.env
+                      release_name = os.environ.get("RELEASE_NAME", "").strip()
+                      min_severity = os.environ.get("MIN_SEVERITY", "low").strip().lower()
+                      threshold = SEVERITY_ORDER.get(min_severity, 1)
+
+                      with open(REPORT, "r", encoding="utf-8") as f:
+                          report = json.load(f)
+
+                      def cvss_value(v):
+                          cvss = v.get("CVSS") or {}
+                          if isinstance(cvss, dict):
+                              for source in ("nvd", "redhat", "ghsa", "bitnami", "ubuntu", "debian"):
+                                  entry = cvss.get(source) or {}
+                                  for key in ("V3Score", "V2Score"):
+                                      if entry.get(key) not in (None, ""):
+                                          return str(entry[key])
+                          return ""
+
+                      items = []
+                      seen = set()
+
+                      for result in report.get("Results", []) or []:
+                          target = result.get("Target", "") or ""
+
+                          for vuln in result.get("Vulnerabilities", []) or []:
+                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN")
+                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower()
+                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN")
+                              installed = str(vuln.get("InstalledVersion", "") or "")
+                              fixed = str(vuln.get("FixedVersion", "") or "")
+                              title = str(vuln.get("Title", "") or "")
+                              description = str(vuln.get("Description", "") or "")
+                              primary_url = str(vuln.get("PrimaryURL", "") or "")
+
+                              if SEVERITY_ORDER.get(severity, 0) < threshold:
+                                  continue
+
+                              key = (
+                                  advisory.lower(),
+                                  package_name.lower(),
+                                  installed.lower(),
+                              )
+
+                              if key in seen:
+                                  continue
+
+                              seen.add(key)
+
+                              vulnerable_range = installed
+                              if fixed:
+                                  vulnerable_range = f"{installed} -> fix {fixed}"
+
+                              details = description or title or primary_url or target
+
+                              details = re.sub(r"[\r\n]+", " ", details).strip()
+                              details = details.replace("~", " ").replace("@@@", " ")
+
+                              cvss = cvss_value(vuln)
+
+                              items.append(
+                                  "~".join([
+                                      advisory,
+                                      severity,
+                                      package_name,
+                                      vulnerable_range,
+                                      cvss,
+                                      details,
+                                  ])
+                              )
+
+                      with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
+                          f.write(f"RELEASE_NAME={release_name}\n")
+                          f.write(f"VULN_COUNT={len(items)}\n")
+                          f.write("VULN_ITEMS=" + "@@@".join(items) + "\n")
+                      PY
 
                       cat /harness/vuln_vars.env
 
@@ -382,11 +481,16 @@ pipeline:
 
                       echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
-                      echo "VULN_ITEMS=$VULN_ITEMS"
                     outputVariables:
                       - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
                       - name: VULN_COUNT
+                        type: String
+                        value: VULN_COUNT
                       - name: VULN_ITEMS
+                        type: String
+                        value: VULN_ITEMS
               - step:
                   type: Run
                   name: Generate_Release_Label
@@ -1099,75 +1203,184 @@ pipeline:
                         -Dmaven.compiler.source=17 \
                         -Dmaven.compiler.target=17
               - step:
-                  type: Owasp
-                  name: OWASP_Dependency_Check
-                  identifier: PR_OWASP_Dependency_Check
+                  type: Run
+                  name: Build_Container_With_Jib
+                  identifier: PR_Build_Container_With_Jib
                   spec:
-                    mode: orchestration
-                    config: default
-                    target:
-                      type: repository
-                      name: <+codebase.repoUrl>
-                      variant: <+codebase.branch>
-                      workspace: sample-app
-                    advanced:
-                      log:
-                        level: info
-                    privileged: true
+                    image: maven:3.9.9-eclipse-temurin-17
+                    shell: Bash
+                    command: |-
+                      set -e
+
+                      echo "=============================================="
+                      echo "JAVA / MAVEN VERSION"
+                      echo "=============================================="
+                      java -version
+                      javac -version
+                      mvn -version
+
+                      echo "=============================================="
+                      echo "BUILD APPLICATION"
+                      echo "=============================================="
+                      cd sample-app
+
+                      mvn -B clean test
+
+                      echo "=============================================="
+                      echo "BUILD CONTAINER WITH JIB"
+                      echo "=============================================="
+
+                      mvn -B jib:buildTar \
+                        -Djib.from.image=eclipse-temurin:17-jre
+
+                      test -f target/jib-image.tar
+
+                      echo "Jib image created successfully:"
+                      ls -lh target/jib-image.tar
               - step:
                   type: Run
-                  name: Run_Maven_Dependency_Check
-                  identifier: PR_Run_Maven_Dependency_Check
+                  name: Trivy_Scan
+                  identifier: PR_Trivy_Scan
                   spec:
-                    envVariables:
-                      NVD_API_KEY: <+secrets.getValue("cegeka_nvd_api_key")>
+                    image: aquasec/trivy:0.74.0
                     shell: Sh
                     command: |-
                       set -e
-                      cd sample-app
-                      echo "Running OWASP Dependency-Check for Maven dependencies"
-                      mvn -B org.owasp:dependency-check-maven:13.0.0:check \
-                        -DnvdApiKey="$NVD_API_KEY" \
-                        -DnvdMaxRetryCount=10 \
-                        -DnvdApiDelay=5000 \
-                        -DnvdApiResultsPerPage=2000 \
-                        -Dformat=JSON \
-                        -DprettyPrint=true \
-                        -DfailBuildOnCVSS=11 \
-                        -DskipTestScope=true
-                      test -f target/dependency-check-report.json
-                      cp target/dependency-check-report.json /harness/dependency-check-report.json
-                      echo "Dependency-Check report generated successfully."
-                      ls -lh /harness/dependency-check-report.json
+
+                      echo "=============================================="
+                      echo "TRIVY VERSION"
+                      echo "=============================================="
+                      trivy version
+
+                      echo "=============================================="
+                      echo "TRIVY IMAGE SCAN"
+                      echo "=============================================="
+
+                      trivy image \
+                        --input /harness/sample-app/target/jib-image.tar \
+                        --scanners vuln \
+                        --format json \
+                        --output /harness/trivy-report.json
+
+                      test -f /harness/trivy-report.json
+
+                      echo "Trivy report generated:"
+                      ls -lh /harness/trivy-report.json
               - step:
                   type: Run
                   name: Parse_Vulnerabilities
                   identifier: PR_Parse_Vulnerabilities
                   spec:
-                    shell: Sh
+                    image: python:3.11
+                    shell: Bash
                     envVariables:
                       RELEASE_NAME: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
                       set -e
 
-                      python3 scripts/parse_maven_dependency_check.py \
-                        /harness/dependency-check-report.json \
-                        "$RELEASE_NAME" \
-                        --min-severity "$MIN_SEVERITY" \
-                        > /harness/pr_vuln_vars.env
+                      echo "=============================================="
+                      echo "PARSING TRIVY VULNERABILITIES"
+                      echo "=============================================="
 
-                      cat /harness/pr_vuln_vars.env
+                      python3 - <<'PY'
+                      import json
+                      import os
+                      import re
 
-                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
-                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
-                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/pr_vuln_vars.env | cut -d= -f2-)"
+                      REPORT = "/harness/trivy-report.json"
 
+                      SEVERITY_ORDER = {
+                          "unknown": 0,
+                          "low": 1,
+                          "medium": 2,
+                          "high": 3,
+                          "critical": 4,
+                      }
+
+                      release_name = os.environ.get("RELEASE_NAME", "").strip()
+                      min_severity = os.environ.get("MIN_SEVERITY", "low").strip().lower()
+                      threshold = SEVERITY_ORDER.get(min_severity, 1)
+
+                      with open(REPORT, "r", encoding="utf-8") as f:
+                          report = json.load(f)
+
+                      def cvss_value(v):
+                          cvss = v.get("CVSS") or {}
+                          if isinstance(cvss, dict):
+                              for source in ("nvd", "redhat", "ghsa", "bitnami", "ubuntu", "debian"):
+                                  entry = cvss.get(source) or {}
+                                  for key in ("V3Score", "V2Score"):
+                                      if entry.get(key) not in (None, ""):
+                                          return str(entry[key])
+                          return ""
+
+                      items = []
+                      seen = set()
+
+                      for result in report.get("Results", []) or []:
+                          target = result.get("Target", "") or ""
+
+                          for vuln in result.get("Vulnerabilities", []) or []:
+                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN")
+                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower()
+                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN")
+                              installed = str(vuln.get("InstalledVersion", "") or "")
+                              fixed = str(vuln.get("FixedVersion", "") or "")
+                              title = str(vuln.get("Title", "") or "")
+                              description = str(vuln.get("Description", "") or "")
+                              primary_url = str(vuln.get("PrimaryURL", "") or "")
+
+                              if SEVERITY_ORDER.get(severity, 0) < threshold:
+                                  continue
+
+                              key = (
+                                  advisory.lower(),
+                                  package_name.lower(),
+                                  installed.lower(),
+                              )
+
+                              if key in seen:
+                                  continue
+
+                              seen.add(key)
+
+                              vulnerable_range = installed
+                              if fixed:
+                                  vulnerable_range = f"{installed} -> fix {fixed}"
+
+                              details = description or title or primary_url or target
+
+                              details = re.sub(r"[\r\n]+", " ", details).strip()
+                              details = details.replace("~", " ").replace("@@@", " ")
+
+                              cvss = cvss_value(vuln)
+
+                              items.append(
+                                  "~".join([
+                                      advisory,
+                                      severity,
+                                      package_name,
+                                      vulnerable_range,
+                                      cvss,
+                                      details,
+                                  ])
+                              )
+
+                      with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
+                          f.write(f"RELEASE_NAME={release_name}\n")
+                          f.write(f"VULN_COUNT={len(items)}\n")
+                          f.write("VULN_ITEMS=" + "@@@".join(items) + "\n")
+                      PY
+
+                      cat /harness/vuln_vars.env
+
+                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
+                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
+
+                      echo "RELEASE_NAME=$RELEASE_NAME"
                       echo "VULN_COUNT=$VULN_COUNT"
-
-                      export RELEASE_NAME
-                      export VULN_COUNT
-                      export VULN_ITEMS
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
