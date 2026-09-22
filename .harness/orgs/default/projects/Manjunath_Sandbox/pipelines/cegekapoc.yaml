@@ -359,6 +359,7 @@ pipeline:
                       trivy image \
                         --input /harness/sample-app/target/jib-image.tar \
                         --scanners vuln \
+                        --pkg-types library \
                         --format json \
                         --output /harness/trivy-report.json
 
@@ -377,12 +378,6 @@ pipeline:
                       RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "PARSING TRIVY VULNERABILITIES"
-                      echo "=============================================="
-
                       python3 - <<'PY'
                       import json
                       import os
@@ -408,7 +403,7 @@ pipeline:
                       def cvss_value(v):
                           cvss = v.get("CVSS") or {}
                           if isinstance(cvss, dict):
-                              for source in ("nvd", "redhat", "ghsa", "bitnami", "ubuntu", "debian"):
+                              for source in ("nvd", "ghsa", "redhat", "ubuntu", "debian", "alpine"):
                                   entry = cvss.get(source) or {}
                                   for key in ("V3Score", "V2Score"):
                                       if entry.get(key) not in (None, ""):
@@ -422,14 +417,12 @@ pipeline:
                           target = result.get("Target", "") or ""
 
                           for vuln in result.get("Vulnerabilities", []) or []:
-                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN")
-                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower()
-                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN")
-                              installed = str(vuln.get("InstalledVersion", "") or "")
-                              fixed = str(vuln.get("FixedVersion", "") or "")
-                              title = str(vuln.get("Title", "") or "")
-                              description = str(vuln.get("Description", "") or "")
-                              primary_url = str(vuln.get("PrimaryURL", "") or "")
+                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN").strip()
+                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower().strip()
+                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN").strip()
+                              installed = str(vuln.get("InstalledVersion", "") or "").strip()
+                              fixed = str(vuln.get("FixedVersion", "") or "").strip()
+                              title = str(vuln.get("Title", "") or "").strip()
 
                               if SEVERITY_ORDER.get(severity, 0) < threshold:
                                   continue
@@ -449,12 +442,14 @@ pipeline:
                               if fixed:
                                   vulnerable_range = f"{installed} -> fix {fixed}"
 
-                              details = description or title or primary_url or target
-
-                              details = re.sub(r"[\r\n]+", " ", details).strip()
+                              # IMPORTANT:
+                              # Do not place the full Trivy Description in a Harness
+                              # output variable. Harness limits an output variable to
+                              # 65536 bytes.
+                              details = title or "Trivy vulnerability detected"
+                              details = re.sub(r"[\r\n]+", " ", details)
                               details = details.replace("~", " ").replace("@@@", " ")
-
-                              cvss = cvss_value(vuln)
+                              details = details[:180]
 
                               items.append(
                                   "~".join([
@@ -462,25 +457,32 @@ pipeline:
                                       severity,
                                       package_name,
                                       vulnerable_range,
-                                      cvss,
+                                      cvss_value(vuln),
                                       details,
                                   ])
                               )
 
+                      vuln_items = "@@@".join(items)
+
+                      print(f"RELEASE_NAME={release_name}")
+                      print(f"VULN_COUNT={len(items)}")
+                      print(f"VULN_ITEMS_BYTES={len(vuln_items.encode('utf-8'))}")
+
+                      # Harness output variables have a 65536-byte limit.
+                      # Fail explicitly rather than silently dropping vulnerabilities.
+                      if len(vuln_items.encode("utf-8")) > 60000:
+                          raise SystemExit(
+                              "ERROR: VULN_ITEMS is still too large for a Harness output variable "
+                              f"({len(vuln_items.encode('utf-8'))} bytes). "
+                              "Reduce the scan scope further or move the vulnerability list "
+                              "through an external artifact/store."
+                          )
+
                       with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
                           f.write(f"RELEASE_NAME={release_name}\n")
                           f.write(f"VULN_COUNT={len(items)}\n")
-                          f.write("VULN_ITEMS=" + "@@@".join(items) + "\n")
+                          f.write(f"VULN_ITEMS={vuln_items}\n")
                       PY
-
-                      cat /harness/vuln_vars.env
-
-                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
@@ -1259,6 +1261,7 @@ pipeline:
                       trivy image \
                         --input /harness/sample-app/target/jib-image.tar \
                         --scanners vuln \
+                        --pkg-types library \
                         --format json \
                         --output /harness/trivy-report.json
 
@@ -1277,12 +1280,6 @@ pipeline:
                       RELEASE_NAME: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
                       MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
                     command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "PARSING TRIVY VULNERABILITIES"
-                      echo "=============================================="
-
                       python3 - <<'PY'
                       import json
                       import os
@@ -1308,7 +1305,7 @@ pipeline:
                       def cvss_value(v):
                           cvss = v.get("CVSS") or {}
                           if isinstance(cvss, dict):
-                              for source in ("nvd", "redhat", "ghsa", "bitnami", "ubuntu", "debian"):
+                              for source in ("nvd", "ghsa", "redhat", "ubuntu", "debian", "alpine"):
                                   entry = cvss.get(source) or {}
                                   for key in ("V3Score", "V2Score"):
                                       if entry.get(key) not in (None, ""):
@@ -1322,14 +1319,12 @@ pipeline:
                           target = result.get("Target", "") or ""
 
                           for vuln in result.get("Vulnerabilities", []) or []:
-                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN")
-                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower()
-                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN")
-                              installed = str(vuln.get("InstalledVersion", "") or "")
-                              fixed = str(vuln.get("FixedVersion", "") or "")
-                              title = str(vuln.get("Title", "") or "")
-                              description = str(vuln.get("Description", "") or "")
-                              primary_url = str(vuln.get("PrimaryURL", "") or "")
+                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN").strip()
+                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower().strip()
+                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN").strip()
+                              installed = str(vuln.get("InstalledVersion", "") or "").strip()
+                              fixed = str(vuln.get("FixedVersion", "") or "").strip()
+                              title = str(vuln.get("Title", "") or "").strip()
 
                               if SEVERITY_ORDER.get(severity, 0) < threshold:
                                   continue
@@ -1349,12 +1344,14 @@ pipeline:
                               if fixed:
                                   vulnerable_range = f"{installed} -> fix {fixed}"
 
-                              details = description or title or primary_url or target
-
-                              details = re.sub(r"[\r\n]+", " ", details).strip()
+                              # IMPORTANT:
+                              # Do not place the full Trivy Description in a Harness
+                              # output variable. Harness limits an output variable to
+                              # 65536 bytes.
+                              details = title or "Trivy vulnerability detected"
+                              details = re.sub(r"[\r\n]+", " ", details)
                               details = details.replace("~", " ").replace("@@@", " ")
-
-                              cvss = cvss_value(vuln)
+                              details = details[:180]
 
                               items.append(
                                   "~".join([
@@ -1362,25 +1359,32 @@ pipeline:
                                       severity,
                                       package_name,
                                       vulnerable_range,
-                                      cvss,
+                                      cvss_value(vuln),
                                       details,
                                   ])
                               )
 
+                      vuln_items = "@@@".join(items)
+
+                      print(f"RELEASE_NAME={release_name}")
+                      print(f"VULN_COUNT={len(items)}")
+                      print(f"VULN_ITEMS_BYTES={len(vuln_items.encode('utf-8'))}")
+
+                      # Harness output variables have a 65536-byte limit.
+                      # Fail explicitly rather than silently dropping vulnerabilities.
+                      if len(vuln_items.encode("utf-8")) > 60000:
+                          raise SystemExit(
+                              "ERROR: VULN_ITEMS is still too large for a Harness output variable "
+                              f"({len(vuln_items.encode('utf-8'))} bytes). "
+                              "Reduce the scan scope further or move the vulnerability list "
+                              "through an external artifact/store."
+                          )
+
                       with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
                           f.write(f"RELEASE_NAME={release_name}\n")
                           f.write(f"VULN_COUNT={len(items)}\n")
-                          f.write("VULN_ITEMS=" + "@@@".join(items) + "\n")
+                          f.write(f"VULN_ITEMS={vuln_items}\n")
                       PY
-
-                      cat /harness/vuln_vars.env
-
-                      export RELEASE_NAME="$(grep '^RELEASE_NAME=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      export VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      export VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
                     outputVariables:
                       - name: RELEASE_NAME
                         type: String
