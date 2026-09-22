@@ -13,8 +13,8 @@ pipeline:
   variables:
     - name: execution_mode
       type: String
-      required: false
-      value: WEEKLY_SCAN
+      required: true
+      value: <+input>
     - name: pr_number
       type: String
       required: false
