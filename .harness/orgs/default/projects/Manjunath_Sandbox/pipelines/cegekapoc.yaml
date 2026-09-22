@@ -11,18 +11,6 @@ pipeline:
         connectorRef: cegekapoc
         build: <+input>
   variables:
-    - name: execution_mode
-      type: String
-      required: true
-      value: <+input>
-    - name: pr_number
-      type: String
-      required: false
-      value: <+trigger.prNumber>
-    - name: pr_source_branch
-      type: String
-      required: false
-      value: <+trigger.sourceBranch>
     - name: jira_project_key
       type: String
       required: false
@@ -50,7 +38,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "WEEKLY_SCAN"
+          condition: <+trigger.type> == "Scheduled"
         spec:
           execution:
             steps:
@@ -264,7 +252,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "WEEKLY_SCAN"
+          condition: <+trigger.type> == "Scheduled"
         spec:
           cloneCodebase: true
           platform:
@@ -717,7 +705,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.variables.execution_mode> == "WEEKLY_SCAN") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -987,7 +975,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.variables.execution_mode> == "WEEKLY_SCAN") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
@@ -1152,7 +1140,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "PR"
+          condition: <+trigger.event> == "PR"
         spec:
           cloneCodebase: true
           platform:
@@ -1170,42 +1158,31 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      SOURCE_BRANCH: <+pipeline.variables.pr_source_branch>
+                      SOURCE_BRANCH: <+trigger.sourceBranch>
+                      PR_NUMBER: <+trigger.prNumber>
                     command: |-
                       set -e
 
                       if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
-                        echo "ERROR: codebase.sourceBranch is empty."
+                        echo "ERROR: Source branch is empty."
                         exit 1
                       fi
 
-                      EPIC_KEY="$(echo "$SOURCE_BRANCH" | sed 's#^security/##')"
+                      RELEASE_NAME="PR-${SOURCE_BRANCH}"
 
-                      if [ "$EPIC_KEY" = "$SOURCE_BRANCH" ]; then
-                        echo "ERROR: Source branch must start with security/."
-                        exit 1
-                      fi
-
-                      if ! echo "$EPIC_KEY" | grep -Eq '^[A-Z][A-Z0-9_]+-[0-9]+$'; then
-                        echo "ERROR: Invalid Jira Epic key: $EPIC_KEY"
-                        exit 1
-                      fi
-
-                      RELEASE_NAME="PR-${EPIC_KEY}"
-
+                      echo "=============================================="
+                      echo "PR CONTEXT"
+                      echo "=============================================="
                       echo "Source branch: $SOURCE_BRANCH"
-                      echo "Epic key: $EPIC_KEY"
+                      echo "Pull request number: $PR_NUMBER"
+                      echo "Release name: $RELEASE_NAME"
 
                       export SOURCE_BRANCH
-                      export EPIC_KEY
                       export RELEASE_NAME
                     outputVariables:
                       - name: SOURCE_BRANCH
                         type: String
                         value: SOURCE_BRANCH
-                      - name: EPIC_KEY
-                        type: String
-                        value: EPIC_KEY
                       - name: RELEASE_NAME
                         type: String
                         value: RELEASE_NAME
@@ -1496,7 +1473,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+pipeline.variables.execution_mode> == "PR_MERGE"
+          condition: (<+trigger.event> == "PR") && (<+trigger.payload.action> == "closed") && (<+trigger.payload.pull_request.merged> == true)
         spec:
           execution:
             steps:
@@ -1595,10 +1572,10 @@ pipeline:
                         value: cegeka-poc2
                       - name: PR_NUMBER
                         type: String
-                        value: <+pipeline.variables.pr_number>
+                        value: <+trigger.prNumber>
                       - name: SOURCE_BRANCH
                         type: String
-                        value: <+pipeline.variables.pr_source_branch>
+                        value: <+trigger.sourceBranch>
                       - name: JIRA_API_BASE
                         type: String
                         value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
