@@ -831,7 +831,6 @@ pipeline:
 
                           REQUEST_BODY='{"jql":"'"$SEARCH_JQL"'","maxResults":100,"fields":["summary","status","parent","issuetype"]}'
 
-                          )"
 
                           HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
                             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
@@ -900,7 +899,6 @@ pipeline:
                             NEW_COUNT=$((NEW_COUNT + 1))
                           done
 
-                          )"
 
                           if [ "$NEW_COUNT" = "0" ]; then
                             # Keep the repeat input non-null. The Create ticket step is
