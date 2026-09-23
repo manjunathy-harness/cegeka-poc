@@ -38,7 +38,6 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.properties.ci.codebase.build.type> == "PR") || (<+pipeline.properties.ci.codebase.build.type> == "branch")
         spec:
           execution:
             steps:
@@ -297,7 +296,6 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.properties.ci.codebase.build.type> == "PR") || (<+pipeline.properties.ci.codebase.build.type> == "branch")
         spec:
           cloneCodebase: true
           platform:
@@ -560,7 +558,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.properties.ci.codebase.build.type> == "PR") || (<+trigger.event> == "PR")
+          condition: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "PR"
         spec:
           cloneCodebase: true
           platform:
@@ -651,7 +649,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.properties.ci.codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -1108,7 +1106,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.properties.ci.codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
