@@ -314,17 +314,115 @@ pipeline:
                         - name: RELEASE_NAME
                           type: String
                           value: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+    - stage:
+        name: PR_Security_Validation
+        identifier: PR_Security_Validation
+        type: CI
+        when:
+          pipelineStatus: Success
+          condition: <+trigger.event> == "PR"
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: PR_Context
+                  identifier: PR_Context
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      SOURCE_BRANCH: <+trigger.sourceBranch>
+                      PR_NUMBER: <+trigger.prNumber>
+                    command: |-
+                      set -e
+
+                      echo "Trigger type: <+trigger.type>"
+                      echo "Trigger event: <+trigger.event>"
+                      echo "Codebase build type: <+codebase.build.type>"
+
+                      if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
+                        echo "ERROR: Source branch is empty."
+                        exit 1
+                      fi
+
+                      RELEASE_NAME="PR-${SOURCE_BRANCH}"
+
+                      echo "=============================================="
+                      echo "PR CONTEXT"
+                      echo "=============================================="
+                      echo "Source branch: $SOURCE_BRANCH"
+                      echo "Pull request number: $PR_NUMBER"
+                      echo "Release name: $RELEASE_NAME"
+
+                      export SOURCE_BRANCH
+                      export RELEASE_NAME
+                    outputVariables:
+                      - name: SOURCE_BRANCH
+                        type: String
+                        value: SOURCE_BRANCH
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+              - step:
+                  type: Run
+                  name: PR_Vulnerability_Gate
+                  identifier: PR_Vulnerability_Gate
+                  when:
+                    stageStatus: Success
+                  spec:
+                    shell: Sh
+                    command: |-
+                      set -e
+
+                      VULN_COUNT="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+                      HAS_VULNS="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
+
+                      echo "=============================================="
+                      echo "PR SECURITY GATE"
+                      echo "=============================================="
+                      echo "Vulnerabilities found: ${VULN_COUNT}"
+                      echo "HAS_VULNS: ${HAS_VULNS}"
+
+                      if [ -z "$VULN_COUNT" ] || [ "$VULN_COUNT" = "null" ] || [ "$HAS_VULNS" = "null" ] || [ -z "$HAS_VULNS" ]; then
+                        echo "ERROR: Vulnerability outputs were not produced by the parser."
+                        exit 1
+                      fi
+
+                      if [ "$HAS_VULNS" = "true" ]; then
+                        echo "SECURITY GATE FAILED."
+                        echo "The PR contains vulnerabilities."
+                        echo "This PR execution will not create Jira tickets or a security branch."
+                        echo "Fix the vulnerabilities and rerun the PR validation."
+                        exit 1
+                      fi
+
+                      echo "SECURITY GATE PASSED."
+                      echo "No vulnerabilities were found in this PR scan."
+    - stage:
+        name: Jira_Automation
+        identifier: Jira_Automation
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+        spec:
+          execution:
+            steps:
               - step:
                   type: Run
                   name: Generate_Release_Label
                   identifier: Generate_Release_Label
-                  when:
-                    stageStatus: Success
-                    condition: <+trigger.type> == "Scheduled"
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
                     command: |-
                       set -e
 
@@ -346,16 +444,13 @@ pipeline:
                   type: Run
                   name: Lookup_Existing_Jira_Epic
                   identifier: Lookup_Existing_Jira_Epic
-                  when:
-                    stageStatus: Success
-                    condition: (<+trigger.type> == "Scheduled") && (<+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
                   spec:
                     shell: Sh
                     envVariables:
                       JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
                       JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
                       JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
                       RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
                       REMEDIATION_LABEL: <+pipeline.variables.jira_remediation_label>
                       JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
@@ -507,22 +602,12 @@ pipeline:
                       - name: EPIC_EXISTS
                       - name: EPIC_KEY
                       - name: EPIC_STATUS
-    - stage:
-        name: Jira_Automation
-        identifier: Jira_Automation
-        type: Custom
-        when:
-          pipelineStatus: Success
-          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
-        spec:
-          execution:
-            steps:
               - stepGroup:
                   name: Create_New_Remediation_Epic
                   identifier: Create_New_Remediation_Epic
                   when:
                     stageStatus: Success
-                    condition: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
+                    condition: <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
                   steps:
                     - step:
                         type: JiraCreate
@@ -591,10 +676,10 @@ pipeline:
                         value: <+pipeline.stages.Jira_Automation.spec.execution.steps.Create_New_Remediation_Epic.steps.Create_Parent_Release_Ticket.issue.key>
                       - name: EXISTING_EPIC_KEY
                         type: String
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
+                        value: <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_KEY>
                       - name: EXISTING_EPIC_STATUS
                         type: String
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS>
+                        value: <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS>
                     outputVariables:
                       - name: ACTIVE_EPIC_KEY
                         type: String
@@ -942,93 +1027,6 @@ pipeline:
                         type: String
                         value: BRANCH_URL
                     timeout: 10m
-    - stage:
-        name: PR_Security_Validation
-        identifier: PR_Security_Validation
-        type: CI
-        when:
-          pipelineStatus: Success
-          condition: <+codebase.build.type> == "PR"
-        spec:
-          cloneCodebase: true
-          platform:
-            os: Linux
-            arch: Amd64
-          runtime:
-            type: Cloud
-            spec: {}
-          execution:
-            steps:
-              - step:
-                  type: Run
-                  name: PR_Context
-                  identifier: PR_Context
-                  spec:
-                    shell: Sh
-                    envVariables:
-                      SOURCE_BRANCH: <+trigger.sourceBranch>
-                      PR_NUMBER: <+trigger.prNumber>
-                    command: |-
-                      set -e
-
-                      if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
-                        echo "ERROR: Source branch is empty."
-                        exit 1
-                      fi
-
-                      RELEASE_NAME="PR-${SOURCE_BRANCH}"
-
-                      echo "=============================================="
-                      echo "PR CONTEXT"
-                      echo "=============================================="
-                      echo "Source branch: $SOURCE_BRANCH"
-                      echo "Pull request number: $PR_NUMBER"
-                      echo "Release name: $RELEASE_NAME"
-
-                      export SOURCE_BRANCH
-                      export RELEASE_NAME
-                    outputVariables:
-                      - name: SOURCE_BRANCH
-                        type: String
-                        value: SOURCE_BRANCH
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-              - step:
-                  type: Run
-                  name: PR_Vulnerability_Gate
-                  identifier: PR_Vulnerability_Gate
-                  when:
-                    stageStatus: Success
-                  spec:
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      VULN_COUNT="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
-                      HAS_VULNS="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
-
-                      echo "=============================================="
-                      echo "PR SECURITY GATE"
-                      echo "=============================================="
-                      echo "Vulnerabilities found: ${VULN_COUNT}"
-                      echo "HAS_VULNS: ${HAS_VULNS}"
-
-                      if [ -z "$VULN_COUNT" ] || [ "$VULN_COUNT" = "null" ] || [ "$HAS_VULNS" = "null" ] || [ -z "$HAS_VULNS" ]; then
-                        echo "ERROR: Vulnerability outputs were not produced by the parser."
-                        exit 1
-                      fi
-
-                      if [ "$HAS_VULNS" = "true" ]; then
-                        echo "SECURITY GATE FAILED."
-                        echo "The PR contains vulnerabilities."
-                        echo "This PR execution will not create Jira tickets or a security branch."
-                        echo "Fix the vulnerabilities and rerun the PR validation."
-                        exit 1
-                      fi
-
-                      echo "SECURITY GATE PASSED."
-                      echo "No vulnerabilities were found in this PR scan."
     - stage:
         name: PR_Merge_Closure
         identifier: PR_Merge_Closure
