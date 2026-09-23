@@ -318,6 +318,9 @@ pipeline:
                   type: Run
                   name: Generate_Release_Label
                   identifier: Generate_Release_Label
+                  when:
+                    stageStatus: Success
+                    condition: <+trigger.type> == "Scheduled"
                   spec:
                     shell: Sh
                     envVariables:
@@ -345,7 +348,7 @@ pipeline:
                   identifier: Lookup_Existing_Jira_Epic
                   when:
                     stageStatus: Success
-                    condition: <+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true"
+                    condition: (<+trigger.type> == "Scheduled") && (<+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
                   spec:
                     shell: Sh
                     envVariables:
