@@ -1,5 +1,5 @@
 inputSet:
-  name: weekly-scan
+  name: weeklyscan
   identifier: weeklyscan
   orgIdentifier: default
   projectIdentifier: Manjunath_Sandbox
@@ -8,8 +8,7 @@ inputSet:
     properties:
       ci:
         codebase:
-          build: <+input>
-    variables:
-      - name: execution_mode
-        type: String
-        value: WEEKLY_SCAN
+          build:
+            type: branch
+            spec:
+              branch: main
