@@ -654,192 +654,153 @@ pipeline:
           execution:
             steps:
               - step:
-                  type: Run
+                  type: ShellScript
                   name: Generate_Release_Label
                   identifier: Generate_Release_Label
+                  timeout: 5m
                   spec:
-                    shell: Sh
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
-                    command: |-
-                      set -e
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
 
-                      SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
-                        | tr '[:upper:]' '[:lower:]' \
-                        | sed 's/[^a-z0-9]/-/g' \
-                        | sed 's/--*/-/g' \
-                        | sed 's/^-//; s/-$//')"
+                          SAFE_RELEASE_NAME="$(echo "$RELEASE_NAME" \
+                            | tr '[:upper:]' '[:lower:]' \
+                            | sed 's/[^a-z0-9]/-/g' \
+                            | sed 's/--*/-/g' \
+                            | sed 's/^-//; s/-$//')"
 
-                      RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
+                          RELEASE_LABEL="security-release-${SAFE_RELEASE_NAME}"
 
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "RELEASE_LABEL=$RELEASE_LABEL"
+                          echo "RELEASE_NAME=$RELEASE_NAME"
+                          echo "RELEASE_LABEL=$RELEASE_LABEL"
 
-                      export RELEASE_LABEL
+                          export RELEASE_LABEL
+                    environmentVariables:
+                      - name: RELEASE_NAME
+                        type: String
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
                     outputVariables:
                       - name: RELEASE_LABEL
+                        type: String
+                        value: RELEASE_LABEL
               - step:
-                  type: Run
+                  type: ShellScript
                   name: Lookup_Existing_Jira_Epic
                   identifier: Lookup_Existing_Jira_Epic
+                  timeout: 10m
                   spec:
-                    shell: Sh
-                    envVariables:
-                      JIRA_API_BASE: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
-                      JIRA_EMAIL: <+secrets.getValue("cegeka_jira_email")>
-                      JIRA_API_TOKEN: <+secrets.getValue("cegeka-poc-jira")>
-                      RELEASE_NAME: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
-                      RELEASE_LABEL: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
-                      REMEDIATION_LABEL: <+pipeline.variables.jira_remediation_label>
-                      JIRA_PROJECT_KEY: <+pipeline.variables.jira_project_key>
-                    command: |-
-                      set -e
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
 
-                      echo "=============================================="
-                      echo "JIRA EPIC LOOKUP"
-                      echo "=============================================="
+                          echo "=============================================="
+                          echo "JIRA EPIC LOOKUP"
+                          echo "=============================================="
+                          echo "PROJECT=$JIRA_PROJECT_KEY"
+                          echo "RELEASE=$RELEASE_NAME"
+                          echo "REMEDIATION_LABEL=$REMEDIATION_LABEL"
+                          echo "RELEASE_LABEL=$RELEASE_LABEL"
 
-                      echo "PROJECT=$JIRA_PROJECT_KEY"
-                      echo "RELEASE=$RELEASE_NAME"
-                      echo "LABEL=$RELEASE_LABEL"
+                          RESPONSE_FILE="/tmp/jira-epic-response.json"
 
-                      echo "=============================================="
+                          # Jira does the matching: newest Epic carrying the stable remediation
+                          # label (or the older per-release label, for Epics created by the
+                          # earlier pipeline). Labels contain hyphens, so they are quoted in JQL;
+                          # the quotes are JSON-escaped. No Python/jq needed on the delegate.
+                          REQUEST_BODY="$(printf '{"jql":"project = %s AND issuetype = Epic AND labels in (\\"%s\\", \\"%s\\") ORDER BY created DESC","maxResults":1,"fields":["summary","status","labels"]}' \
+                            "$JIRA_PROJECT_KEY" \
+                            "$REMEDIATION_LABEL" \
+                            "$RELEASE_LABEL")"
 
-                      RESPONSE_FILE="/tmp/jira-response.json"
+                          echo "REQUEST_BODY=$REQUEST_BODY"
 
-                      export SEARCH_JQL="project = ${JIRA_PROJECT_KEY} AND issuetype = Epic ORDER BY created DESC"
+                          HTTP_CODE="$(curl -sS \
+                            -o "$RESPONSE_FILE" \
+                            -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                            -X POST \
+                            -H "Accept: application/json" \
+                            -H "Content-Type: application/json" \
+                            "${JIRA_API_BASE}/search/jql" \
+                            --data "$REQUEST_BODY")"
 
-                      echo "JQL=$SEARCH_JQL"
+                          echo "JIRA HTTP STATUS=$HTTP_CODE"
 
-                      REQUEST_BODY="$(python3 - <<'PY'
-                      import json
-                      import os
+                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                            echo "ERROR: Jira search failed."
+                            cat "$RESPONSE_FILE"
+                            exit 1
+                          fi
 
-                      body = {
-                          "jql": os.environ["SEARCH_JQL"],
-                          "maxResults": 100,
-                          "fields": [
-                              "summary",
-                              "status",
-                              "issuetype",
-                              "labels"
-                          ]
-                      }
+                          # Issue key, e.g. SCRUM-12 (statusCategory keys are lowercase, so they never match).
+                          EPIC_KEY="$(grep -oE '"key":"[A-Z][A-Z0-9_]*-[0-9]+"' "$RESPONSE_FILE" \
+                            | head -1 \
+                            | sed -E 's/"key":"([^"]+)"/\1/' || true)"
 
-                      print(json.dumps(body))
-                      PY
-                      )"
+                          # First "name" inside the "status" object is the status name (e.g. "To Do", "Done").
+                          EPIC_STATUS="$(tr -d '\n' < "$RESPONSE_FILE" \
+                            | grep -oE '"status":\{[^}]*' \
+                            | head -1 \
+                            | grep -oE '"name":"[^"]*"' \
+                            | head -1 \
+                            | sed -E 's/"name":"([^"]*)"/\1/' || true)"
 
-                      echo "=============================================="
-                      echo "SEARCHING JIRA"
-                      echo "=============================================="
+                          if [ -n "$EPIC_KEY" ]; then
+                            EPIC_EXISTS="true"
+                            echo "MATCH FOUND: ${EPIC_KEY} (status: ${EPIC_STATUS})"
+                          else
+                            EPIC_EXISTS="false"
+                            EPIC_STATUS=""
+                            echo "NO MATCHING REMEDIATION EPIC FOUND"
+                          fi
 
-                      HTTP_CODE="$(curl -sS \
-                        -o "$RESPONSE_FILE" \
-                        -w "%{http_code}" \
-                        -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                        -X POST \
-                        -H "Accept: application/json" \
-                        -H "Content-Type: application/json" \
-                        "${JIRA_API_BASE}/search/jql" \
-                        --data "$REQUEST_BODY")"
+                          echo "EPIC_EXISTS=$EPIC_EXISTS"
+                          echo "EPIC_KEY=$EPIC_KEY"
+                          echo "EPIC_STATUS=$EPIC_STATUS"
 
-                      echo "JIRA HTTP STATUS=$HTTP_CODE"
-
-                      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                        echo "ERROR: Jira search failed."
-                        cat "$RESPONSE_FILE"
-                        exit 1
-                      fi
-
-                      echo "Jira search successful."
-
-                      echo "=============================================="
-                      echo "SEARCHING FOR EXISTING RELEASE EPIC"
-                      echo "=============================================="
-
-                      export RESPONSE_FILE
-                      export RELEASE_NAME
-                      export RELEASE_LABEL
-
-                      MATCH_RESULT="$(python3 - <<'PY'
-                      import json
-                      import os
-
-                      with open(os.environ["RESPONSE_FILE"], "r", encoding="utf-8") as f:
-                          data = json.load(f)
-
-                      release_name = os.environ["RELEASE_NAME"].strip().lower()
-                      release_label = os.environ["RELEASE_LABEL"].strip().lower()
-                      remediation_label = os.environ.get("REMEDIATION_LABEL", "cegeka-security-remediation").strip().lower()
-
-                      issues = data.get("issues", [])
-
-                      print(f"TOTAL_EPICS_RETURNED={len(issues)}")
-
-                      # Weekly remediation uses a stable label because RELEASE_NAME changes every week.
-                      # This prevents a new Epic from being created for the same open remediation cycle.
-                      for issue in issues:
-                          key = issue.get("key", "")
-                          fields = issue.get("fields", {})
-
-                          summary = fields.get("summary", "") or ""
-                          status = (fields.get("status", {}) or {}).get("name", "") or ""
-                          issue_type = (fields.get("issuetype", {}) or {}).get("name", "") or ""
-                          labels = [str(x).lower() for x in (fields.get("labels", []) or [])]
-
-                          if issue_type.lower() != "epic":
-                              continue
-
-                          if remediation_label in labels:
-                              print("MATCH_FOUND_BY_STABLE_REMEDIATION_LABEL")
-                              print("EPIC_EXISTS=true")
-                              print(f"EPIC_KEY={key}")
-                              print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
-                              raise SystemExit(0)
-
-                          # Backward-compatible lookup for an Epic created by the earlier pipeline.
-                          if release_name in summary.lower() or release_label in labels:
-                              print("MATCH_FOUND_BY_LEGACY_RELEASE_IDENTIFIER")
-                              print("EPIC_EXISTS=true")
-                              print(f"EPIC_KEY={key}")
-                              print(f"EPIC_STATUS={status}")
-                              print(f"EPIC_SUMMARY={summary}")
-                              raise SystemExit(0)
-
-                      print("NO_MATCHING_REMEDIATION_EPIC_FOUND")
-                      print("EPIC_EXISTS=false")
-                      print("EPIC_KEY=")
-                      print("EPIC_STATUS=")
-                      print("EPIC_SUMMARY=")
-                      PY
-                      )"
-
-                      echo "=============================================="
-                      echo "MATCH RESULT"
-                      echo "$MATCH_RESULT"
-                      echo "=============================================="
-
-                      export EPIC_EXISTS="$(echo "$MATCH_RESULT" | grep '^EPIC_EXISTS=' | cut -d= -f2- || true)"
-                      export EPIC_KEY="$(echo "$MATCH_RESULT" | grep '^EPIC_KEY=' | cut -d= -f2- || true)"
-                      export EPIC_STATUS="$(echo "$MATCH_RESULT" | grep '^EPIC_STATUS=' | cut -d= -f2- || true)"
-
-                      if [ -z "$EPIC_EXISTS" ]; then
-                        EPIC_EXISTS="false"
-                      fi
-
-                      echo "EPIC_EXISTS=$EPIC_EXISTS"
-                      echo "EPIC_KEY=$EPIC_KEY"
-                      echo "EPIC_STATUS=$EPIC_STATUS"
-
-                      export EPIC_EXISTS
-                      export EPIC_KEY
-                      export EPIC_STATUS
+                          export EPIC_EXISTS
+                          export EPIC_KEY
+                          export EPIC_STATUS
+                    environmentVariables:
+                      - name: JIRA_API_BASE
+                        type: String
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: JIRA_EMAIL
+                        type: String
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                      - name: RELEASE_NAME
+                        type: String
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+                      - name: RELEASE_LABEL
+                        type: String
+                        value: <+execution.steps.Generate_Release_Label.output.outputVariables.RELEASE_LABEL>
+                      - name: REMEDIATION_LABEL
+                        type: String
+                        value: <+pipeline.variables.jira_remediation_label>
+                      - name: JIRA_PROJECT_KEY
+                        type: String
+                        value: <+pipeline.variables.jira_project_key>
                     outputVariables:
                       - name: EPIC_EXISTS
+                        type: String
+                        value: EPIC_EXISTS
                       - name: EPIC_KEY
+                        type: String
+                        value: EPIC_KEY
                       - name: EPIC_STATUS
+                        type: String
+                        value: EPIC_STATUS
               - stepGroup:
                   name: Create_New_Remediation_Epic
                   identifier: Create_New_Remediation_Epic
