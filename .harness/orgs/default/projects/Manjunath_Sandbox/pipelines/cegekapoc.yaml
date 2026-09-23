@@ -74,7 +74,9 @@ pipeline:
                           SOURCE_BRANCH="<+trigger.sourceBranch>"
                           PR_NUMBER="<+trigger.prNumber>"
 
-                          if [ "$CODEBASE_BUILD_TYPE" = "PR" ]; then
+                          # A PR webhook must always follow the PR flow, even if the trigger
+                          # passed codebase build type "branch" by mistake.
+                          if [ "$CODEBASE_BUILD_TYPE" = "PR" ] || [ "$TRIGGER_EVENT" = "PR" ]; then
                             if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
                               echo "ERROR: PR source branch is empty."
                               exit 1
@@ -557,7 +559,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+codebase.build.type> == "PR"
+          condition: (<+codebase.build.type> == "PR") || (<+trigger.event> == "PR")
         spec:
           cloneCodebase: true
           platform:
@@ -648,7 +650,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "branch") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: (<+codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -1105,7 +1107,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "branch") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
