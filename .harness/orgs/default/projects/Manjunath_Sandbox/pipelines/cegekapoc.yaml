@@ -184,37 +184,38 @@ pipeline:
                           echo "GENERATING TAG"
                           echo "=============================================="
 
-                          if [ "$FLOW" = "PR" ]; then
-                            # PR tags are unique to the PR commit and do not consume weekly release numbers.
-                            NEW_TAG="pr-${PR_NUMBER}-${SHORT_SHA}"
-                            RELEASE_NAME="$NEW_TAG"
-                          else
-                            echo "EXISTING WEEKLY RELEASE TAGS"
+                          # PR and weekly runs share ONE version sequence (v1.0.0.N).
+                          # Tags are fetched from the whole repo, so numbering is global
+                          # no matter which branch was cloned. The Queue step above
+                          # serialises runs so two executions never pick the same number.
+                          # PR runs tag the PR head commit; weekly runs tag main.
+                          echo "EXISTING RELEASE TAGS"
+                          git tag -l | \
+                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
+                            sort -V || true
+
+                          LATEST_TAG="$(
                             git tag -l | \
-                              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-                              sort -V || true
+                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
+                            sort -V | \
+                            tail -1
+                          )"
 
-                            LATEST_TAG="$(
-                              git tag -l | \
-                              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-                              sort -V | \
-                              tail -1
-                            )"
+                          echo "Latest tag  : ${LATEST_TAG:-<none>}"
 
-                            if [ -z "$LATEST_TAG" ]; then
-                              NEW_TAG="v1.0.0.1"
-                            else
-                              VERSION="${LATEST_TAG#v}"
-                              MAJOR="$(echo "$VERSION" | cut -d. -f1)"
-                              MINOR="$(echo "$VERSION" | cut -d. -f2)"
-                              PATCH="$(echo "$VERSION" | cut -d. -f3)"
-                              BUILD="$(echo "$VERSION" | cut -d. -f4)"
-                              BUILD=$((BUILD + 1))
-                              NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
-                            fi
-
-                            RELEASE_NAME="${NEW_TAG#v}"
+                          if [ -z "$LATEST_TAG" ]; then
+                            NEW_TAG="v1.0.0.1"
+                          else
+                            VERSION="${LATEST_TAG#v}"
+                            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+                            MINOR="$(echo "$VERSION" | cut -d. -f2)"
+                            PATCH="$(echo "$VERSION" | cut -d. -f3)"
+                            BUILD="$(echo "$VERSION" | cut -d. -f4)"
+                            BUILD=$((BUILD + 1))
+                            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
                           fi
+
+                          RELEASE_NAME="${NEW_TAG#v}"
 
                           echo "Flow        : ${FLOW}"
                           echo "Commit      : ${HEAD_SHA}"
