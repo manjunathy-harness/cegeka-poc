@@ -945,7 +945,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+trigger.event> == "PR"
+          condition: <+codebase.build.type> == "PR"
         spec:
           cloneCodebase: true
           platform:
