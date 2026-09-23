@@ -1,0 +1,14 @@
+inputSet:
+  name: weeklyscan
+  identifier: weeklyscan
+  orgIdentifier: default
+  projectIdentifier: Manjunath_Sandbox
+  pipeline:
+    identifier: cegekapoc
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: main
