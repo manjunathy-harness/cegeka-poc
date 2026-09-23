@@ -270,12 +270,10 @@ pipeline:
                     templateRef: Cegeka_Common_Security_Scan
                     versionLabel: v1
                     templateInputs:
-                      type: StepGroup
-                      spec:
-                        variables:
-                          - name: RELEASE_NAME
-                            type: String
-                            value: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
+                      variables:
+                        - name: RELEASE_NAME
+                          type: String
+                          value: <+input>
               - step:
                   type: Run
                   name: Generate_Release_Label
@@ -960,12 +958,10 @@ pipeline:
                     templateRef: Cegeka_Common_Security_Scan
                     versionLabel: v1
                     templateInputs:
-                      type: StepGroup
-                      spec:
-                        variables:
-                          - name: RELEASE_NAME
-                            type: String
-                            value: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
+                      variables:
+                        - name: RELEASE_NAME
+                          type: String
+                          value: <+input>
               - step:
                   type: Run
                   name: PR_Vulnerability_Gate
