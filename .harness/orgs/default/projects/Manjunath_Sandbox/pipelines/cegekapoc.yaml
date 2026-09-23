@@ -263,252 +263,19 @@ pipeline:
             spec: {}
           execution:
             steps:
-              - step:
-                  type: Run
-                  name: Build_And_Test
-                  identifier: Build_And_Test
-                  spec:
-                    image: maven:3.9.9-eclipse-temurin-17
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
-                      echo "=============================================="
-                      java -version
-                      javac -version
-                      mvn -version
-
-                      cd sample-app
-
-                      echo "=============================================="
-                      echo "BUILDING WITH JAVA 17"
-                      echo "=============================================="
-
-                      mvn -B clean test \
-                        -Dmaven.compiler.release=17 \
-                        -Dmaven.compiler.source=17 \
-                        -Dmaven.compiler.target=17
-              - step:
-                  type: Run
-                  name: Build_Container_With_Jib
-                  identifier: Build_Container_With_Jib
-                  spec:
-                    image: maven:3.9.9-eclipse-temurin-17
-                    shell: Bash
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
-                      echo "=============================================="
-                      java -version
-                      javac -version
-                      mvn -version
-
-                      echo "=============================================="
-                      echo "BUILD APPLICATION"
-                      echo "=============================================="
-                      cd sample-app
-
-                      mvn -B clean test
-
-                      echo "=============================================="
-                      echo "BUILD CONTAINER WITH JIB"
-                      echo "=============================================="
-
-                      mvn -B com.google.cloud.tools:jib-maven-plugin:3.5.2:buildTar \
-                        -Djib.from.image=eclipse-temurin:17-jre
-
-                      test -f target/jib-image.tar
-
-                      echo "Jib image created successfully:"
-                      ls -lh target/jib-image.tar
-              - step:
-                  type: Run
-                  name: Trivy_Scan
-                  identifier: Trivy_Scan
-                  spec:
-                    image: aquasec/trivy:0.74.0
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "TRIVY VERSION"
-                      echo "=============================================="
-                      trivy version
-
-                      echo "=============================================="
-                      echo "TRIVY IMAGE SCAN"
-                      echo "=============================================="
-
-                      trivy image \
-                        --input /harness/sample-app/target/jib-image.tar \
-                        --scanners vuln \
-                        --pkg-types library \
-                        --format json \
-                        --output /harness/trivy-report.json
-
-                      test -f /harness/trivy-report.json
-
-                      echo "Trivy report generated:"
-                      ls -lh /harness/trivy-report.json
-              - step:
-                  type: Run
-                  name: Parse_Vulnerabilities
-                  identifier: Parse_Vulnerabilities
-                  spec:
-                    image: python:3.11
-                    shell: Bash
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
-                    command: |-
-                      python3 - <<'PY'
-                      import json
-                      import os
-                      import re
-
-                      REPORT = "/harness/trivy-report.json"
-
-                      SEVERITY_ORDER = {
-                          "unknown": 0,
-                          "low": 1,
-                          "medium": 2,
-                          "high": 3,
-                          "critical": 4,
-                      }
-
-                      release_name = os.environ.get("RELEASE_NAME", "").strip()
-                      min_severity = os.environ.get("MIN_SEVERITY", "low").strip().lower()
-                      threshold = SEVERITY_ORDER.get(min_severity, 1)
-
-                      with open(REPORT, "r", encoding="utf-8") as f:
-                          report = json.load(f)
-
-                      def cvss_value(v):
-                          cvss = v.get("CVSS") or {}
-                          if isinstance(cvss, dict):
-                              for source in ("nvd", "ghsa", "redhat", "ubuntu", "debian", "alpine"):
-                                  entry = cvss.get(source) or {}
-                                  for key in ("V3Score", "V2Score"):
-                                      if entry.get(key) not in (None, ""):
-                                          return str(entry[key])
-                          return ""
-
-                      items = []
-                      seen = set()
-
-                      for result in report.get("Results", []) or []:
-                          target = result.get("Target", "") or ""
-
-                          for vuln in result.get("Vulnerabilities", []) or []:
-                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN").strip()
-                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower().strip()
-                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN").strip()
-                              installed = str(vuln.get("InstalledVersion", "") or "").strip()
-                              fixed = str(vuln.get("FixedVersion", "") or "").strip()
-                              title = str(vuln.get("Title", "") or "").strip()
-
-                              if SEVERITY_ORDER.get(severity, 0) < threshold:
-                                  continue
-
-                              key = (
-                                  advisory.lower(),
-                                  package_name.lower(),
-                                  installed.lower(),
-                              )
-
-                              if key in seen:
-                                  continue
-
-                              seen.add(key)
-
-                              vulnerable_range = installed
-                              if fixed:
-                                  vulnerable_range = f"{installed} -> fix {fixed}"
-
-                              # IMPORTANT:
-                              # Do not place the full Trivy Description in a Harness
-                              # output variable. Harness limits an output variable to
-                              # 65536 bytes.
-                              details = title or "Trivy vulnerability detected"
-                              details = re.sub(r"[\r\n]+", " ", details)
-                              details = details.replace("~", " ").replace("@@@", " ")
-                              details = details[:180]
-
-                              items.append(
-                                  "~".join([
-                                      advisory,
-                                      severity,
-                                      package_name,
-                                      vulnerable_range,
-                                      cvss_value(vuln),
-                                      details,
-                                  ])
-                              )
-
-                      vuln_items = "@@@".join(items)
-
-                      print(f"RELEASE_NAME={release_name}")
-                      print(f"VULN_COUNT={len(items)}")
-                      print(f"VULN_ITEMS_BYTES={len(vuln_items.encode('utf-8'))}")
-
-                      # Harness output variables have a 65536-byte limit.
-                      # Fail explicitly rather than silently dropping vulnerabilities.
-                      if len(vuln_items.encode("utf-8")) > 60000:
-                          raise SystemExit(
-                              "ERROR: VULN_ITEMS is still too large for a Harness output variable "
-                              f"({len(vuln_items.encode('utf-8'))} bytes). "
-                              "Reduce the scan scope further or move the vulnerability list "
-                              "through an external artifact/store."
-                          )
-
-                      with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
-                          f.write(f"RELEASE_NAME={release_name}\n")
-                          f.write(f"VULN_COUNT={len(items)}\n")
-                          f.write(f"VULN_ITEMS={vuln_items}\n")
-                      PY
-
-                      # The Python process cannot export variables into the
-                      # parent Harness shell. Read the generated values back here
-                      # and export them so Harness can capture them as step outputs.
-                      VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      if ! echo "$VULN_COUNT" | grep -Eq '^[0-9]+$'; then
-                        echo "ERROR: VULN_COUNT is not a numeric value: [$VULN_COUNT]"
-                        exit 1
-                      fi
-
-                      HAS_VULNS="false"
-                      if [ "$VULN_COUNT" -gt 0 ]; then
-                        HAS_VULNS="true"
-                      fi
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
-                      echo "HAS_VULNS=$HAS_VULNS"
-
-                      export RELEASE_NAME
-                      export VULN_COUNT
-                      export VULN_ITEMS
-                      export HAS_VULNS
-                    outputVariables:
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-                      - name: VULN_COUNT
-                        type: String
-                        value: VULN_COUNT
-                      - name: VULN_ITEMS
-                        type: String
-                        value: VULN_ITEMS
-                      - name: HAS_VULNS
-                        type: String
-                        value: HAS_VULNS
+              - stepGroup:
+                  name: Common_Security_Scan
+                  identifier: Common_Security_Scan
+                  template:
+                    templateRef: Cegeka_Common_Security_Scan
+                    versionLabel: v1
+                    templateInputs:
+                      type: StepGroup
+                      spec:
+                        variables:
+                          - name: RELEASE_NAME
+                            type: String
+                            value: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
               - step:
                   type: Run
                   name: Generate_Release_Label
@@ -516,7 +283,7 @@ pipeline:
                   spec:
                     shell: Sh
                     envVariables:
-                      RELEASE_NAME: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+                      RELEASE_NAME: <+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
                     command: |-
                       set -e
 
@@ -540,7 +307,7 @@ pipeline:
                   identifier: Lookup_Existing_Jira_Epic
                   when:
                     stageStatus: Success
-                    condition: <+execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true"
+                    condition: <+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true"
                   spec:
                     shell: Sh
                     envVariables:
@@ -705,7 +472,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -728,14 +495,14 @@ pipeline:
                             - name: Reporter
                               value: manjunath.chavan2017@gmail.com
                             - name: Summary
-                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
+                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                             - name: Description
                               value: |-
-                                Automated weekly security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
+                                Automated weekly security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
 
                                 This Epic is the single source of truth for the current security remediation cycle.
 
-                                Total vulnerabilities found in this scan: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
+                                Total vulnerabilities found in this scan: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
 
                                 Future weekly scans reuse this Epic while it is open and add only newly discovered vulnerability child tickets.
 
@@ -917,7 +684,7 @@ pipeline:
                         value: <+execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.ACTIVE_EPIC_KEY>
                       - name: VULN_ITEMS
                         type: String
-                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>
+                        value: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_ITEMS>
                     outputVariables:
                       - name: NEW_VULN_COUNT
                         type: String
@@ -951,7 +718,7 @@ pipeline:
                           CVSS score: <+repeat.item.split("~")[4]>
                           Details: <+repeat.item.split("~")[5]>
 
-                          Release first detected: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
+                          Release first detected: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
 
                           This ticket was created by the weekly vulnerability discovery workflow because this vulnerability was not already associated with the active remediation Epic.
 
@@ -975,7 +742,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
@@ -1186,252 +953,19 @@ pipeline:
                       - name: RELEASE_NAME
                         type: String
                         value: RELEASE_NAME
-              - step:
-                  type: Run
-                  name: Build_And_Test
-                  identifier: PR_Build_And_Test
-                  spec:
-                    image: maven:3.9.9-eclipse-temurin-17
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
-                      echo "=============================================="
-                      java -version
-                      javac -version
-                      mvn -version
-
-                      cd sample-app
-
-                      echo "=============================================="
-                      echo "BUILDING WITH JAVA 17"
-                      echo "=============================================="
-
-                      mvn -B clean test \
-                        -Dmaven.compiler.release=17 \
-                        -Dmaven.compiler.source=17 \
-                        -Dmaven.compiler.target=17
-              - step:
-                  type: Run
-                  name: Build_Container_With_Jib
-                  identifier: PR_Build_Container_With_Jib
-                  spec:
-                    image: maven:3.9.9-eclipse-temurin-17
-                    shell: Bash
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
-                      echo "=============================================="
-                      java -version
-                      javac -version
-                      mvn -version
-
-                      echo "=============================================="
-                      echo "BUILD APPLICATION"
-                      echo "=============================================="
-                      cd sample-app
-
-                      mvn -B clean test
-
-                      echo "=============================================="
-                      echo "BUILD CONTAINER WITH JIB"
-                      echo "=============================================="
-
-                      mvn -B com.google.cloud.tools:jib-maven-plugin:3.5.2:buildTar \
-                        -Djib.from.image=eclipse-temurin:17-jre
-
-                      test -f target/jib-image.tar
-
-                      echo "Jib image created successfully:"
-                      ls -lh target/jib-image.tar
-              - step:
-                  type: Run
-                  name: Trivy_Scan
-                  identifier: PR_Trivy_Scan
-                  spec:
-                    image: aquasec/trivy:0.74.0
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "TRIVY VERSION"
-                      echo "=============================================="
-                      trivy version
-
-                      echo "=============================================="
-                      echo "TRIVY IMAGE SCAN"
-                      echo "=============================================="
-
-                      trivy image \
-                        --input /harness/sample-app/target/jib-image.tar \
-                        --scanners vuln \
-                        --pkg-types library \
-                        --format json \
-                        --output /harness/trivy-report.json
-
-                      test -f /harness/trivy-report.json
-
-                      echo "Trivy report generated:"
-                      ls -lh /harness/trivy-report.json
-              - step:
-                  type: Run
-                  name: Parse_Vulnerabilities
-                  identifier: PR_Parse_Vulnerabilities
-                  spec:
-                    image: python:3.11
-                    shell: Bash
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
-                    command: |-
-                      python3 - <<'PY'
-                      import json
-                      import os
-                      import re
-
-                      REPORT = "/harness/trivy-report.json"
-
-                      SEVERITY_ORDER = {
-                          "unknown": 0,
-                          "low": 1,
-                          "medium": 2,
-                          "high": 3,
-                          "critical": 4,
-                      }
-
-                      release_name = os.environ.get("RELEASE_NAME", "").strip()
-                      min_severity = os.environ.get("MIN_SEVERITY", "low").strip().lower()
-                      threshold = SEVERITY_ORDER.get(min_severity, 1)
-
-                      with open(REPORT, "r", encoding="utf-8") as f:
-                          report = json.load(f)
-
-                      def cvss_value(v):
-                          cvss = v.get("CVSS") or {}
-                          if isinstance(cvss, dict):
-                              for source in ("nvd", "ghsa", "redhat", "ubuntu", "debian", "alpine"):
-                                  entry = cvss.get(source) or {}
-                                  for key in ("V3Score", "V2Score"):
-                                      if entry.get(key) not in (None, ""):
-                                          return str(entry[key])
-                          return ""
-
-                      items = []
-                      seen = set()
-
-                      for result in report.get("Results", []) or []:
-                          target = result.get("Target", "") or ""
-
-                          for vuln in result.get("Vulnerabilities", []) or []:
-                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN").strip()
-                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower().strip()
-                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN").strip()
-                              installed = str(vuln.get("InstalledVersion", "") or "").strip()
-                              fixed = str(vuln.get("FixedVersion", "") or "").strip()
-                              title = str(vuln.get("Title", "") or "").strip()
-
-                              if SEVERITY_ORDER.get(severity, 0) < threshold:
-                                  continue
-
-                              key = (
-                                  advisory.lower(),
-                                  package_name.lower(),
-                                  installed.lower(),
-                              )
-
-                              if key in seen:
-                                  continue
-
-                              seen.add(key)
-
-                              vulnerable_range = installed
-                              if fixed:
-                                  vulnerable_range = f"{installed} -> fix {fixed}"
-
-                              # IMPORTANT:
-                              # Do not place the full Trivy Description in a Harness
-                              # output variable. Harness limits an output variable to
-                              # 65536 bytes.
-                              details = title or "Trivy vulnerability detected"
-                              details = re.sub(r"[\r\n]+", " ", details)
-                              details = details.replace("~", " ").replace("@@@", " ")
-                              details = details[:180]
-
-                              items.append(
-                                  "~".join([
-                                      advisory,
-                                      severity,
-                                      package_name,
-                                      vulnerable_range,
-                                      cvss_value(vuln),
-                                      details,
-                                  ])
-                              )
-
-                      vuln_items = "@@@".join(items)
-
-                      print(f"RELEASE_NAME={release_name}")
-                      print(f"VULN_COUNT={len(items)}")
-                      print(f"VULN_ITEMS_BYTES={len(vuln_items.encode('utf-8'))}")
-
-                      # Harness output variables have a 65536-byte limit.
-                      # Fail explicitly rather than silently dropping vulnerabilities.
-                      if len(vuln_items.encode("utf-8")) > 60000:
-                          raise SystemExit(
-                              "ERROR: VULN_ITEMS is still too large for a Harness output variable "
-                              f"({len(vuln_items.encode('utf-8'))} bytes). "
-                              "Reduce the scan scope further or move the vulnerability list "
-                              "through an external artifact/store."
-                          )
-
-                      with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
-                          f.write(f"RELEASE_NAME={release_name}\n")
-                          f.write(f"VULN_COUNT={len(items)}\n")
-                          f.write(f"VULN_ITEMS={vuln_items}\n")
-                      PY
-
-                      # The Python process cannot export variables into the
-                      # parent Harness shell. Read the generated values back here
-                      # and export them so Harness can capture them as step outputs.
-                      VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      if ! echo "$VULN_COUNT" | grep -Eq '^[0-9]+$'; then
-                        echo "ERROR: VULN_COUNT is not a numeric value: [$VULN_COUNT]"
-                        exit 1
-                      fi
-
-                      HAS_VULNS="false"
-                      if [ "$VULN_COUNT" -gt 0 ]; then
-                        HAS_VULNS="true"
-                      fi
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
-                      echo "HAS_VULNS=$HAS_VULNS"
-
-                      export RELEASE_NAME
-                      export VULN_COUNT
-                      export VULN_ITEMS
-                      export HAS_VULNS
-                    outputVariables:
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-                      - name: VULN_COUNT
-                        type: String
-                        value: VULN_COUNT
-                      - name: VULN_ITEMS
-                        type: String
-                        value: VULN_ITEMS
-                      - name: HAS_VULNS
-                        type: String
-                        value: HAS_VULNS
+              - stepGroup:
+                  name: Common_Security_Scan
+                  identifier: Common_Security_Scan
+                  template:
+                    templateRef: Cegeka_Common_Security_Scan
+                    versionLabel: v1
+                    templateInputs:
+                      type: StepGroup
+                      spec:
+                        variables:
+                          - name: RELEASE_NAME
+                            type: String
+                            value: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
               - step:
                   type: Run
                   name: PR_Vulnerability_Gate
@@ -1443,8 +977,8 @@ pipeline:
                     command: |-
                       set -e
 
-                      VULN_COUNT="<+execution.steps.PR_Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
-                      HAS_VULNS="<+execution.steps.PR_Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
+                      VULN_COUNT="<+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+                      HAS_VULNS="<+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
 
                       echo "=============================================="
                       echo "PR SECURITY GATE"
