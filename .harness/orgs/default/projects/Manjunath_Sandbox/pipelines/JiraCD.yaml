@@ -31,556 +31,39 @@ pipeline:
       value: cegeka-security-remediation
   stages:
     - stage:
-        name: Release_Queue
-        identifier: Release_Queue
+        name: Get Vul Evidence
+        identifier: Get_Vul_Evidence
+        description: ""
         type: Custom
-        when:
-          pipelineStatus: Success
         spec:
           execution:
             steps:
-              - step:
-                  type: Queue
-                  name: Release_Version_Queue
-                  identifier: Release_Version_Queue
-                  spec:
-                    key: cegeka-release-version
-                    scope: Pipeline
-              - step:
-                  type: ShellScript
-                  name: Generate_Release_Version
-                  identifier: Generate_Release_Version
-                  spec:
-                    shell: Bash
-                    onDelegate: true
-                    source:
-                      type: Inline
-                      spec:
-                        script: |-
-                          set -e
-
-                          echo "=============================================="
-                          echo "CEGEKA RELEASE / TAG GENERATION"
-                          echo "=============================================="
-
-                          GITHUB_USER="manjunathy-harness"
-                          REPO="cegeka-poc"
-                          TRIGGER_TYPE="<+trigger.type>"
-                          TRIGGER_EVENT="<+trigger.event>"
-                          CODEBASE_BUILD_TYPE="<+pipeline.properties.ci.codebase.build.type>"
-                          SOURCE_BRANCH="<+trigger.sourceBranch>"
-                          PR_NUMBER="<+trigger.prNumber>"
-                          SECURITY_EPIC_KEY=""
-
-                          # A PR webhook must always follow the PR flow, even if the trigger
-                          # passed codebase build type "branch" by mistake.
-                          if [ "$CODEBASE_BUILD_TYPE" = "PR" ] || [ "$TRIGGER_EVENT" = "PR" ]; then
-                            if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
-                              echo "ERROR: PR source branch is empty."
-                              exit 1
-                            fi
-
-                            if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
-                              echo "ERROR: PR number is empty."
-                              exit 1
-                            fi
-
-                            BRANCH="$SOURCE_BRANCH"
-                            FLOW="PR"
-
-                            # A PR from a remediation branch (security/<EPIC_KEY>) belongs to an
-                            # existing Epic: new findings are added there, no new Epic is created.
-                            case "$SOURCE_BRANCH" in
-                              security/*)
-                                FLOW="SECURITY_PR"
-                                SECURITY_EPIC_KEY="${SOURCE_BRANCH#security/}"
-                                if ! printf '%s' "$SECURITY_EPIC_KEY" | grep -Eq '^[A-Z][A-Z0-9_]*-[0-9]+$'; then
-                                  echo "ERROR: Branch ${SOURCE_BRANCH} must be security/<JIRA-KEY>, e.g. security/SCRUM-12."
-                                  exit 1
-                                fi
-                                ;;
-                            esac
-                          else
-                            BRANCH="main"
-                            FLOW="WEEKLY"
-                          fi
-
-                          echo "Flow          : ${FLOW}"
-                          echo "Trigger type  : ${TRIGGER_TYPE}"
-                          echo "Trigger event : ${TRIGGER_EVENT}"
-                          echo "Codebase type  : ${CODEBASE_BUILD_TYPE}"
-                          echo "GitHub User   : ${GITHUB_USER}"
-                          echo "Repository    : ${GITHUB_USER}/${REPO}"
-                          echo "Branch        : ${BRANCH}"
-                          if [ "$FLOW" != "WEEKLY" ]; then
-                            echo "PR number     : ${PR_NUMBER}"
-                          fi
-                          if [ "$FLOW" = "SECURITY_PR" ]; then
-                            echo "Epic (branch) : ${SECURITY_EPIC_KEY}"
-                          fi
-
-                          echo "=============================================="
-                          echo "VALIDATING GITHUB TOKEN"
-                          echo "=============================================="
-
-                          if [ -z "$GITHUB_TOKEN" ]; then
-                            echo "ERROR: GITHUB_TOKEN was not injected."
-                            exit 1
-                          fi
-
-                          TOKEN_LENGTH="${#GITHUB_TOKEN}"
-                          TOKEN_SHA256="$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')"
-                          echo "Token length: ${TOKEN_LENGTH}"
-                          echo "Token SHA256: ${TOKEN_SHA256}"
-
-                          GITHUB_HTTP_STATUS="$(curl -sS \
-                            -o /tmp/github_user.json \
-                            -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            https://api.github.com/user)"
-
-                          echo "GitHub HTTP status: ${GITHUB_HTTP_STATUS}"
-
-                          if [ "$GITHUB_HTTP_STATUS" != "200" ]; then
-                            echo "ERROR: GitHub authentication failed."
-                            cat /tmp/github_user.json
-                            exit 1
-                          fi
-
-                          echo "GitHub authentication: SUCCESS"
-
-                          GITHUB_LOGIN="$(sed -n 's/.*"login":"\([^"]*\)".*/\1/p' /tmp/github_user.json | head -1)"
-                          echo "GitHub user: ${GITHUB_LOGIN}"
-
-                          echo "=============================================="
-                          echo "VALIDATING REPOSITORY ACCESS"
-                          echo "=============================================="
-
-                          REPO_HTTP_STATUS="$(curl -sS \
-                            -o /tmp/github_repo.json \
-                            -w "%{http_code}" \
-                            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${GITHUB_USER}/${REPO}")"
-
-                          echo "Repository HTTP status: ${REPO_HTTP_STATUS}"
-
-                          if [ "$REPO_HTTP_STATUS" != "200" ]; then
-                            echo "ERROR: Repository access failed."
-                            cat /tmp/github_repo.json
-                            exit 1
-                          fi
-
-                          echo "REPOSITORY ACCESS SUCCESS"
-
-                          echo "=============================================="
-                          echo "CLONING REPOSITORY"
-                          echo "=============================================="
-
-                          WORK_DIR="/tmp/cegeka-release"
-                          rm -rf "$WORK_DIR"
-
-                          git clone \
-                            --branch "$BRANCH" \
-                            "https://github.com/${GITHUB_USER}/${REPO}.git" \
-                            "$WORK_DIR"
-
-                          cd "$WORK_DIR"
-                          git fetch --tags --force origin
-
-                          HEAD_SHA="$(git rev-parse HEAD)"
-                          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
-
-                          echo "Checked out commit: ${HEAD_SHA}"
-
-                          echo "=============================================="
-                          echo "GENERATING TAG"
-                          echo "=============================================="
-
-                          # PR and weekly runs share ONE version sequence (v1.0.0.N).
-                          # Tags are fetched from the whole repo, so numbering is global
-                          # no matter which branch was cloned. The Queue step above
-                          # serialises runs so two executions never pick the same number.
-                          # PR runs tag the PR head commit; weekly runs tag main.
-                          echo "EXISTING RELEASE TAGS"
-                          git tag -l | \
-                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-                            sort -V || true
-
-                          LATEST_TAG="$(
-                            git tag -l | \
-                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-                            sort -V | \
-                            tail -1
-                          )"
-
-                          echo "Latest tag  : ${LATEST_TAG:-<none>}"
-
-                          if [ -z "$LATEST_TAG" ]; then
-                            NEW_TAG="v1.0.0.1"
-                          else
-                            VERSION="${LATEST_TAG#v}"
-                            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
-                            MINOR="$(echo "$VERSION" | cut -d. -f2)"
-                            PATCH="$(echo "$VERSION" | cut -d. -f3)"
-                            BUILD="$(echo "$VERSION" | cut -d. -f4)"
-                            BUILD=$((BUILD + 1))
-                            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
-                          fi
-
-                          RELEASE_NAME="${NEW_TAG#v}"
-
-                          echo "Flow        : ${FLOW}"
-                          echo "Commit      : ${HEAD_SHA}"
-                          echo "New tag     : ${NEW_TAG}"
-                          echo "Release     : ${RELEASE_NAME}"
-
-                          echo "=============================================="
-                          echo "CREATING / VERIFYING GIT TAG"
-                          echo "=============================================="
-
-                          git config user.name "Harness Release Automation"
-                          git config user.email "harness-release@harness.io"
-
-                          EXISTING_TAG_SHA="$(git ls-remote --tags origin "refs/tags/${NEW_TAG}" | awk '{print $1}' | head -1 || true)"
-
-                          if [ -n "$EXISTING_TAG_SHA" ]; then
-                            if [ "$EXISTING_TAG_SHA" = "$HEAD_SHA" ]; then
-                              echo "Tag already exists on the expected commit: ${NEW_TAG}"
-                            else
-                              echo "ERROR: Tag ${NEW_TAG} already exists on a different commit."
-                              echo "Existing commit: ${EXISTING_TAG_SHA}"
-                              echo "Expected commit: ${HEAD_SHA}"
-                              exit 1
-                            fi
-                          else
-                            git tag "$NEW_TAG" "$HEAD_SHA"
-                            echo "Local tag created: ${NEW_TAG}"
-
-                            GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
-                            rm -f "$GIT_CREDENTIAL_FILE"
-                            printf 'https://%s:%s@github.com\n' \
-                              "$GITHUB_USER" \
-                              "$GITHUB_TOKEN" \
-                              > "$GIT_CREDENTIAL_FILE"
-                            chmod 600 "$GIT_CREDENTIAL_FILE"
-                            git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
-
-                            echo "PUSHING TAG TO GITHUB"
-                            git push origin "$NEW_TAG"
-                            rm -f "$GIT_CREDENTIAL_FILE"
-
-                            echo "Git tag pushed successfully: ${NEW_TAG}"
-                          fi
-
-                          echo "=============================================="
-                          echo "VERIFYING REMOTE TAG"
-                          echo "=============================================="
-                          git ls-remote --tags origin "refs/tags/${NEW_TAG}"
-
-                          echo "=============================================="
-                          echo "RELEASE GENERATION COMPLETE"
-                          echo "=============================================="
-
-                          export RELEASE_NAME
-                          export RELEASE_TAG="$NEW_TAG"
-                          export SOURCE_BRANCH="$BRANCH"
-                          export FLOW
-                          export SECURITY_EPIC_KEY
-                    environmentVariables:
-                      - name: GITHUB_TOKEN
-                        type: Secret
-                        value: cegeka-poc2
-                    outputVariables:
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-                      - name: RELEASE_TAG
-                        type: String
-                        value: RELEASE_TAG
-                      - name: SOURCE_BRANCH
-                        type: String
-                        value: SOURCE_BRANCH
-                      - name: FLOW
-                        type: String
-                        value: FLOW
-                      - name: SECURITY_EPIC_KEY
-                        type: String
-                        value: SECURITY_EPIC_KEY
-                  timeout: 10m
-    - stage:
-        name: Build_And_Scan
-        identifier: Build_And_Scan
-        type: CI
-        when:
-          pipelineStatus: Success
-        spec:
-          cloneCodebase: true
-          platform:
-            os: Linux
-            arch: Amd64
-          runtime:
-            type: Cloud
-            spec: {}
-          execution:
-            steps:
-              - step:
-                  type: Run
-                  name: Build_And_Test
-                  identifier: Build_And_Test
-                  spec:
-                    image: maven:3.9.9-eclipse-temurin-17
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
-                      echo "=============================================="
-                      java -version
-                      javac -version
-                      mvn -version
-
-                      cd sample-app
-
-                      echo "=============================================="
-                      echo "BUILDING WITH JAVA 17"
-                      echo "=============================================="
-
-                      mvn -B clean test \
-                        -Dmaven.compiler.release=17 \
-                        -Dmaven.compiler.source=17 \
-                        -Dmaven.compiler.target=17
-              - step:
-                  type: Run
-                  name: Build_Container_With_Jib
-                  identifier: Build_Container_With_Jib
-                  spec:
-                    image: maven:3.9.9-eclipse-temurin-17
-                    shell: Bash
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "JAVA / MAVEN VERSION"
-                      echo "=============================================="
-                      java -version
-                      javac -version
-                      mvn -version
-
-                      echo "=============================================="
-                      echo "BUILD APPLICATION"
-                      echo "=============================================="
-                      cd sample-app
-
-                      mvn -B clean test
-
-                      echo "=============================================="
-                      echo "BUILD CONTAINER WITH JIB"
-                      echo "=============================================="
-
-                      mvn -B com.google.cloud.tools:jib-maven-plugin:3.5.2:buildTar \
-                        -Djib.from.image=eclipse-temurin:17-jre
-
-                      test -f target/jib-image.tar
-
-                      echo "Jib image created successfully:"
-                      ls -lh target/jib-image.tar
-              - step:
-                  type: Run
-                  name: Trivy_Scan
-                  identifier: Trivy_Scan
-                  spec:
-                    image: aquasec/trivy:0.74.0
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      echo "=============================================="
-                      echo "TRIVY VERSION"
-                      echo "=============================================="
-                      trivy version
-
-                      echo "=============================================="
-                      echo "TRIVY IMAGE SCAN"
-                      echo "=============================================="
-
-                      trivy image \
-                        --input /harness/sample-app/target/jib-image.tar \
-                        --scanners vuln \
-                        --pkg-types library \
-                        --format json \
-                        --output /harness/trivy-report.json
-
-                      test -f /harness/trivy-report.json
-
-                      echo "Trivy report generated:"
-                      ls -lh /harness/trivy-report.json
-              - step:
-                  type: Run
-                  name: Parse_Vulnerabilities
-                  identifier: Parse_Vulnerabilities
-                  spec:
-                    image: python:3.11
-                    shell: Bash
-                    envVariables:
-                      RELEASE_NAME: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_NAME>
-                      MIN_SEVERITY: <+pipeline.variables.min_severity_for_demo>
-                    command: |-
-                      python3 - <<'PY'
-                      import json
-                      import os
-                      import re
-
-                      REPORT = "/harness/trivy-report.json"
-
-                      SEVERITY_ORDER = {
-                          "unknown": 0,
-                          "low": 1,
-                          "medium": 2,
-                          "high": 3,
-                          "critical": 4,
-                      }
-
-                      release_name = os.environ.get("RELEASE_NAME", "").strip()
-                      min_severity = os.environ.get("MIN_SEVERITY", "low").strip().lower()
-                      threshold = SEVERITY_ORDER.get(min_severity, 1)
-
-                      with open(REPORT, "r", encoding="utf-8") as f:
-                          report = json.load(f)
-
-                      def cvss_value(v):
-                          cvss = v.get("CVSS") or {}
-                          if isinstance(cvss, dict):
-                              for source in ("nvd", "ghsa", "redhat", "ubuntu", "debian", "alpine"):
-                                  entry = cvss.get(source) or {}
-                                  for key in ("V3Score", "V2Score"):
-                                      if entry.get(key) not in (None, ""):
-                                          return str(entry[key])
-                          return ""
-
-                      items = []
-                      seen = set()
-
-                      for result in report.get("Results", []) or []:
-                          target = result.get("Target", "") or ""
-
-                          for vuln in result.get("Vulnerabilities", []) or []:
-                              advisory = str(vuln.get("VulnerabilityID", "") or "UNKNOWN").strip()
-                              severity = str(vuln.get("Severity", "UNKNOWN") or "UNKNOWN").lower().strip()
-                              package_name = str(vuln.get("PkgName", "") or target or "UNKNOWN").strip()
-                              installed = str(vuln.get("InstalledVersion", "") or "").strip()
-                              fixed = str(vuln.get("FixedVersion", "") or "").strip()
-                              title = str(vuln.get("Title", "") or "").strip()
-
-                              if SEVERITY_ORDER.get(severity, 0) < threshold:
-                                  continue
-
-                              key = (
-                                  advisory.lower(),
-                                  package_name.lower(),
-                                  installed.lower(),
-                              )
-
-                              if key in seen:
-                                  continue
-
-                              seen.add(key)
-
-                              vulnerable_range = installed
-                              if fixed:
-                                  vulnerable_range = f"{installed} -> fix {fixed}"
-
-                              # IMPORTANT:
-                              # Do not place the full Trivy Description in a Harness
-                              # output variable. Harness limits an output variable to
-                              # 65536 bytes.
-                              details = title or "Trivy vulnerability detected"
-                              details = re.sub(r"[\r\n]+", " ", details)
-                              details = details.replace("~", " ").replace("@@@", " ")
-                              details = details[:180]
-
-                              items.append(
-                                  "~".join([
-                                      advisory,
-                                      severity,
-                                      package_name,
-                                      vulnerable_range,
-                                      cvss_value(vuln),
-                                      details,
-                                  ])
-                              )
-
-                      vuln_items = "@@@".join(items)
-
-                      print(f"RELEASE_NAME={release_name}")
-                      print(f"VULN_COUNT={len(items)}")
-                      print(f"VULN_ITEMS_BYTES={len(vuln_items.encode('utf-8'))}")
-
-                      # Harness output variables have a 65536-byte limit.
-                      # Fail explicitly rather than silently dropping vulnerabilities.
-                      if len(vuln_items.encode("utf-8")) > 60000:
-                          raise SystemExit(
-                              "ERROR: VULN_ITEMS is still too large for a Harness output variable "
-                              f"({len(vuln_items.encode('utf-8'))} bytes). "
-                              "Reduce the scan scope further or move the vulnerability list "
-                              "through an external artifact/store."
-                          )
-
-                      with open("/harness/vuln_vars.env", "w", encoding="utf-8") as f:
-                          f.write(f"RELEASE_NAME={release_name}\n")
-                          f.write(f"VULN_COUNT={len(items)}\n")
-                          f.write(f"VULN_ITEMS={vuln_items}\n")
-                      PY
-
-                      # The Python process cannot export variables into the
-                      # parent Harness shell. Read the generated values back here
-                      # and export them so Harness can capture them as step outputs.
-                      VULN_COUNT="$(grep '^VULN_COUNT=' /harness/vuln_vars.env | cut -d= -f2-)"
-                      VULN_ITEMS="$(grep '^VULN_ITEMS=' /harness/vuln_vars.env | cut -d= -f2-)"
-
-                      if ! echo "$VULN_COUNT" | grep -Eq '^[0-9]+$'; then
-                        echo "ERROR: VULN_COUNT is not a numeric value: [$VULN_COUNT]"
-                        exit 1
-                      fi
-
-                      HAS_VULNS="false"
-                      if [ "$VULN_COUNT" -gt 0 ]; then
-                        HAS_VULNS="true"
-                      fi
-
-                      echo "RELEASE_NAME=$RELEASE_NAME"
-                      echo "VULN_COUNT=$VULN_COUNT"
-                      echo "HAS_VULNS=$HAS_VULNS"
-
-                      export RELEASE_NAME
-                      export VULN_COUNT
-                      export VULN_ITEMS
-                      export HAS_VULNS
-                    outputVariables:
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-                      - name: VULN_COUNT
-                        type: String
-                        value: VULN_COUNT
-                      - name: VULN_ITEMS
-                        type: String
-                        value: VULN_ITEMS
-                      - name: HAS_VULNS
-                        type: String
-                        value: HAS_VULNS
+              - stepGroup:
+                  name: Pick json vul
+                  identifier: Pick_json_vul
+                  steps:
+                    - step:
+                        type: DownloadAwsS3
+                        name: DownloadAwsS3_1
+                        identifier: DownloadAwsS3_1
+                        spec:
+                          connectorRef: <+input>
+                          bucketName: <+input>
+                          region: <+input>
+                          paths:
+                            - zc
+                  stepGroupInfra:
+                    type: KubernetesDirect
+                    spec:
+                      connectorRef: account.ccm_work_shared_lab
+        tags: {}
     - stage:
         name: Jira_Automation
         identifier: Jira_Automation
         type: Custom
         when:
           pipelineStatus: Success
-          condition: ((<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
-            == "WEEKLY") || (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
-            == "SECURITY_PR")) && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>
-            == "true")
+          condition: ((<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") || (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "SECURITY_PR")) && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -765,10 +248,7 @@ pipeline:
                   identifier: Create_New_Remediation_Epic
                   when:
                     stageStatus: Success
-                    condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
-                      == "WEEKLY") && ((<+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS>
-                      == "false") || (<+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS>
-                      == "Done"))
+                    condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") && ((<+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false") || (<+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"))
                   steps:
                     - step:
                         type: JiraCreate
@@ -782,9 +262,7 @@ pipeline:
                             - name: Reporter
                               value: manjunath.chavan2017@gmail.com
                             - name: Summary
-                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
-                                - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>
-                                vulnerabilities found
+                              value: Security scan results - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME> - <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT> vulnerabilities found
                             - name: Description
                               value: |-
                                 Automated weekly security scan for release <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>.
@@ -995,8 +473,7 @@ pipeline:
                   identifier: Create_New_Vulnerability_Ticket
                   when:
                     stageStatus: Success
-                    condition: <+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_COUNT>
-                      != "0"
+                    condition: <+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_COUNT> != "0"
                   spec:
                     connectorRef: cegekapocjira
                     projectKey: <+pipeline.variables.jira_project_key>
@@ -1005,8 +482,7 @@ pipeline:
                       - name: Reporter
                         value: manjunath.chavan2017@gmail.com
                       - name: Summary
-                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"\
-                          ~\")[0]> in <+repeat.item.split(\"~\")[2]>"
+                        value: "[<+repeat.item.split(\"~\")[1]>] <+repeat.item.split(\"~\")[0]> in <+repeat.item.split(\"~\")[2]>"
                       - name: Description
                         value: |-
                           Advisory / CVE: <+repeat.item.split("~")[0]>
@@ -1042,10 +518,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
-            == "WEEKLY") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>
-            == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE>
-            == "true")
+          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
@@ -1210,9 +683,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
-            == "PR") || (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
-            == "SECURITY_PR")
+          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "PR") || (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "SECURITY_PR")
         spec:
           cloneCodebase: true
           platform:
@@ -1307,8 +778,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+trigger.payload.action> == "closed") && (<+trigger.payload.pull_request.merged>
-            == true)
+          condition: (<+trigger.payload.action> == "closed") && (<+trigger.payload.pull_request.merged> == true)
         spec:
           execution:
             steps:
