@@ -1,5 +1,6 @@
 inputSet:
   name: weeklyscan
+  tags: {}
   identifier: weeklyscan
   orgIdentifier: default
   projectIdentifier: Manjunath_Sandbox
