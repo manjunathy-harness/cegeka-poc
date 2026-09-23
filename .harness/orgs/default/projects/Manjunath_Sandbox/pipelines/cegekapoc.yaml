@@ -72,6 +72,7 @@ pipeline:
                           CODEBASE_BUILD_TYPE="<+pipeline.properties.ci.codebase.build.type>"
                           SOURCE_BRANCH="<+trigger.sourceBranch>"
                           PR_NUMBER="<+trigger.prNumber>"
+                          SECURITY_EPIC_KEY=""
 
                           # A PR webhook must always follow the PR flow, even if the trigger
                           # passed codebase build type "branch" by mistake.
@@ -88,6 +89,19 @@ pipeline:
 
                             BRANCH="$SOURCE_BRANCH"
                             FLOW="PR"
+
+                            # A PR from a remediation branch (security/<EPIC_KEY>) belongs to an
+                            # existing Epic: new findings are added there, no new Epic is created.
+                            case "$SOURCE_BRANCH" in
+                              security/*)
+                                FLOW="SECURITY_PR"
+                                SECURITY_EPIC_KEY="${SOURCE_BRANCH#security/}"
+                                if ! printf '%s' "$SECURITY_EPIC_KEY" | grep -Eq '^[A-Z][A-Z0-9_]*-[0-9]+$'; then
+                                  echo "ERROR: Branch ${SOURCE_BRANCH} must be security/<JIRA-KEY>, e.g. security/SCRUM-12."
+                                  exit 1
+                                fi
+                                ;;
+                            esac
                           else
                             BRANCH="main"
                             FLOW="WEEKLY"
@@ -100,8 +114,11 @@ pipeline:
                           echo "GitHub User   : ${GITHUB_USER}"
                           echo "Repository    : ${GITHUB_USER}/${REPO}"
                           echo "Branch        : ${BRANCH}"
-                          if [ "$FLOW" = "PR" ]; then
+                          if [ "$FLOW" != "WEEKLY" ]; then
                             echo "PR number     : ${PR_NUMBER}"
+                          fi
+                          if [ "$FLOW" = "SECURITY_PR" ]; then
+                            echo "Epic (branch) : ${SECURITY_EPIC_KEY}"
                           fi
 
                           echo "=============================================="
@@ -272,6 +289,7 @@ pipeline:
                           export RELEASE_TAG="$NEW_TAG"
                           export SOURCE_BRANCH="$BRANCH"
                           export FLOW
+                          export SECURITY_EPIC_KEY
                     environmentVariables:
                       - name: GITHUB_TOKEN
                         type: Secret
@@ -289,7 +307,10 @@ pipeline:
                       - name: FLOW
                         type: String
                         value: FLOW
-                    timeout: 10m
+                      - name: SECURITY_EPIC_KEY
+                        type: String
+                        value: SECURITY_EPIC_KEY
+                  timeout: 10m
     - stage:
         name: Build_And_Scan
         identifier: Build_And_Scan
@@ -553,103 +574,12 @@ pipeline:
                         type: String
                         value: HAS_VULNS
     - stage:
-        name: PR_Security_Validation
-        identifier: PR_Security_Validation
-        type: CI
-        when:
-          pipelineStatus: Success
-          condition: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "PR"
-        spec:
-          cloneCodebase: true
-          platform:
-            os: Linux
-            arch: Amd64
-          runtime:
-            type: Cloud
-            spec: {}
-          execution:
-            steps:
-              - step:
-                  type: Run
-                  name: PR_Context
-                  identifier: PR_Context
-                  spec:
-                    shell: Sh
-                    envVariables:
-                      SOURCE_BRANCH: <+trigger.sourceBranch>
-                      PR_NUMBER: <+trigger.prNumber>
-                    command: |-
-                      set -e
-
-                      echo "Trigger type: <+trigger.type>"
-                      echo "Trigger event: <+trigger.event>"
-                      echo "Codebase build type: <+pipeline.properties.ci.codebase.build.type>"
-
-                      if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
-                        echo "ERROR: Source branch is empty."
-                        exit 1
-                      fi
-
-                      RELEASE_NAME="PR-${SOURCE_BRANCH}"
-
-                      echo "=============================================="
-                      echo "PR CONTEXT"
-                      echo "=============================================="
-                      echo "Source branch: $SOURCE_BRANCH"
-                      echo "Pull request number: $PR_NUMBER"
-                      echo "Release name: $RELEASE_NAME"
-
-                      export SOURCE_BRANCH
-                      export RELEASE_NAME
-                    outputVariables:
-                      - name: SOURCE_BRANCH
-                        type: String
-                        value: SOURCE_BRANCH
-                      - name: RELEASE_NAME
-                        type: String
-                        value: RELEASE_NAME
-              - step:
-                  type: Run
-                  name: PR_Vulnerability_Gate
-                  identifier: PR_Vulnerability_Gate
-                  when:
-                    stageStatus: Success
-                  spec:
-                    shell: Sh
-                    command: |-
-                      set -e
-
-                      VULN_COUNT="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
-                      HAS_VULNS="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
-
-                      echo "=============================================="
-                      echo "PR SECURITY GATE"
-                      echo "=============================================="
-                      echo "Vulnerabilities found: ${VULN_COUNT}"
-                      echo "HAS_VULNS: ${HAS_VULNS}"
-
-                      if [ -z "$VULN_COUNT" ] || [ "$VULN_COUNT" = "null" ] || [ "$HAS_VULNS" = "null" ] || [ -z "$HAS_VULNS" ]; then
-                        echo "ERROR: Vulnerability outputs were not produced by the parser."
-                        exit 1
-                      fi
-
-                      if [ "$HAS_VULNS" = "true" ]; then
-                        echo "SECURITY GATE FAILED."
-                        echo "The PR contains vulnerabilities."
-                        echo "This PR execution will not create Jira tickets or a security branch."
-                        echo "Fix the vulnerabilities and rerun the PR validation."
-                        exit 1
-                      fi
-
-                      echo "SECURITY GATE PASSED."
-                      echo "No vulnerabilities were found in this PR scan."
-    - stage:
         name: Jira_Automation
         identifier: Jira_Automation
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: ((<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") || (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "SECURITY_PR")) && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -708,6 +638,7 @@ pipeline:
                           echo "RELEASE=$RELEASE_NAME"
                           echo "REMEDIATION_LABEL=$REMEDIATION_LABEL"
                           echo "RELEASE_LABEL=$RELEASE_LABEL"
+                          echo "FLOW=$FLOW"
 
                           RESPONSE_FILE="/tmp/jira-epic-response.json"
 
@@ -715,29 +646,50 @@ pipeline:
                           # label (or the older per-release label, for Epics created by the
                           # earlier pipeline). Labels contain hyphens, so they are quoted in JQL;
                           # the quotes are JSON-escaped. No Python/jq needed on the delegate.
-                          REQUEST_BODY="$(printf '{"jql":"project = %s AND issuetype = Epic AND labels in (\\"%s\\", \\"%s\\") ORDER BY created DESC","maxResults":1,"fields":["summary","status","labels"]}' \
-                            "$JIRA_PROJECT_KEY" \
-                            "$REMEDIATION_LABEL" \
-                            "$RELEASE_LABEL")"
+                          if [ "$FLOW" = "SECURITY_PR" ]; then
+                            # PR from security/<EPIC_KEY>: the Epic is fixed by the branch name.
+                            # Never search or create; just confirm the Epic exists.
+                            echo "SECURITY PR: using Epic from branch name: ${SECURITY_EPIC_KEY}"
 
-                          echo "REQUEST_BODY=$REQUEST_BODY"
+                            HTTP_CODE="$(curl -sS \
+                              -o "$RESPONSE_FILE" \
+                              -w "%{http_code}" \
+                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                              -H "Accept: application/json" \
+                              "${JIRA_API_BASE}/issue/${SECURITY_EPIC_KEY}?fields=status")"
 
-                          HTTP_CODE="$(curl -sS \
-                            -o "$RESPONSE_FILE" \
-                            -w "%{http_code}" \
-                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                            -X POST \
-                            -H "Accept: application/json" \
-                            -H "Content-Type: application/json" \
-                            "${JIRA_API_BASE}/search/jql" \
-                            --data "$REQUEST_BODY")"
+                            echo "JIRA HTTP STATUS=$HTTP_CODE"
 
-                          echo "JIRA HTTP STATUS=$HTTP_CODE"
+                            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                              echo "ERROR: Epic ${SECURITY_EPIC_KEY} from the branch name was not found in Jira."
+                              cat "$RESPONSE_FILE"
+                              exit 1
+                            fi
+                          else
+                            REQUEST_BODY="$(printf '{"jql":"project = %s AND issuetype = Epic AND labels in (\\"%s\\", \\"%s\\") ORDER BY created DESC","maxResults":1,"fields":["summary","status","labels"]}' \
+                              "$JIRA_PROJECT_KEY" \
+                              "$REMEDIATION_LABEL" \
+                              "$RELEASE_LABEL")"
 
-                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-                            echo "ERROR: Jira search failed."
-                            cat "$RESPONSE_FILE"
-                            exit 1
+                            echo "REQUEST_BODY=$REQUEST_BODY"
+
+                            HTTP_CODE="$(curl -sS \
+                              -o "$RESPONSE_FILE" \
+                              -w "%{http_code}" \
+                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                              -X POST \
+                              -H "Accept: application/json" \
+                              -H "Content-Type: application/json" \
+                              "${JIRA_API_BASE}/search/jql" \
+                              --data "$REQUEST_BODY")"
+
+                            echo "JIRA HTTP STATUS=$HTTP_CODE"
+
+                            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                              echo "ERROR: Jira search failed."
+                              cat "$RESPONSE_FILE"
+                              exit 1
+                            fi
                           fi
 
                           # Issue key, e.g. SCRUM-12 (statusCategory keys are lowercase, so they never match).
@@ -791,6 +743,12 @@ pipeline:
                       - name: JIRA_PROJECT_KEY
                         type: String
                         value: <+pipeline.variables.jira_project_key>
+                      - name: FLOW
+                        type: String
+                        value: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
+                      - name: SECURITY_EPIC_KEY
+                        type: String
+                        value: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.SECURITY_EPIC_KEY>
                     outputVariables:
                       - name: EPIC_EXISTS
                         type: String
@@ -806,7 +764,7 @@ pipeline:
                   identifier: Create_New_Remediation_Epic
                   when:
                     stageStatus: Success
-                    condition: <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false" || <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"
+                    condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "WEEKLY") && ((<+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_EXISTS> == "false") || (<+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS> == "Done"))
                   steps:
                     - step:
                         type: JiraCreate
@@ -834,7 +792,7 @@ pipeline:
                                 Pipeline execution: <+pipeline.executionUrl>
                             - name: Labels
                               value: <+pipeline.variables.jira_remediation_label>
-                          timeout: 5m
+                        timeout: 5m
               - step:
                   type: ShellScript
                   name: Resolve_Active_Remediation_Epic
@@ -855,8 +813,12 @@ pipeline:
                             ACTIVE_EPIC_KEY="$NEW_EPIC_KEY"
                             NEW_REMEDIATION_CYCLE="true"
                           elif [ "${EXISTING_EPIC_STATUS:-}" = "Done" ]; then
-                            echo "ERROR: Existing Epic is Done but no new Epic was created."
-                            exit 1
+                            if [ "${FLOW:-}" = "SECURITY_PR" ]; then
+                              echo "WARNING: Epic ${ACTIVE_EPIC_KEY} is Done, but this PR comes from its branch; adding findings to it anyway."
+                            else
+                              echo "ERROR: Existing Epic is Done but no new Epic was created."
+                              exit 1
+                            fi
                           fi
 
                           if [ -z "$ACTIVE_EPIC_KEY" ] || [ "$ACTIVE_EPIC_KEY" = "null" ]; then
@@ -879,6 +841,9 @@ pipeline:
                       - name: EXISTING_EPIC_STATUS
                         type: String
                         value: <+execution.steps.Lookup_Existing_Jira_Epic.output.outputVariables.EPIC_STATUS>
+                      - name: FLOW
+                        type: String
+                        value: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>
                     outputVariables:
                       - name: ACTIVE_EPIC_KEY
                         type: String
@@ -886,7 +851,7 @@ pipeline:
                       - name: NEW_REMEDIATION_CYCLE
                         type: String
                         value: NEW_REMEDIATION_CYCLE
-                    timeout: 10m
+                  timeout: 10m
               - step:
                   type: ShellScript
                   name: Lookup_Existing_Vulnerability_Tickets
@@ -1017,7 +982,7 @@ pipeline:
                       - name: NEW_VULN_ITEMS
                         type: String
                         value: NEW_VULN_ITEMS
-                    timeout: 10m
+                  timeout: 10m
               - step:
                   type: JiraCreate
                   name: Create_New_Vulnerability_Ticket
@@ -1045,18 +1010,20 @@ pipeline:
 
                           Release first detected: <+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.RELEASE_NAME>
 
-                          This ticket was created by the weekly vulnerability discovery workflow because this vulnerability was not already associated with the active remediation Epic.
+                          Detected by: <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> scan (tag <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.RELEASE_TAG>)
+
+                          This ticket was created because this vulnerability was not already associated with the active remediation Epic.
 
                           Pipeline execution: <+pipeline.executionUrl>
                       - name: Parent
                         value: <+execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.ACTIVE_EPIC_KEY>
-                    timeout: 5m
-                    failureStrategies:
-                      - onFailure:
-                          errors:
-                            - AllErrors
-                          action:
-                            type: MarkAsSuccess
+                  timeout: 5m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: MarkAsSuccess
                   strategy:
                     repeat:
                       items: <+execution.steps.Lookup_Existing_Vulnerability_Tickets.output.outputVariables.NEW_VULN_ITEMS.split("@@@")>
@@ -1225,7 +1192,102 @@ pipeline:
                       - name: BRANCH_URL
                         type: String
                         value: BRANCH_URL
-                    timeout: 10m
+                  timeout: 10m
+    - stage:
+        name: PR_Security_Validation
+        identifier: PR_Security_Validation
+        type: CI
+        when:
+          pipelineStatus: Success
+          condition: (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "PR") || (<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW> == "SECURITY_PR")
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: PR_Context
+                  identifier: PR_Context
+                  spec:
+                    shell: Sh
+                    envVariables:
+                      SOURCE_BRANCH: <+trigger.sourceBranch>
+                      PR_NUMBER: <+trigger.prNumber>
+                    command: |-
+                      set -e
+
+                      echo "Trigger type: <+trigger.type>"
+                      echo "Trigger event: <+trigger.event>"
+                      echo "Codebase build type: <+pipeline.properties.ci.codebase.build.type>"
+
+                      if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
+                        echo "ERROR: Source branch is empty."
+                        exit 1
+                      fi
+
+                      RELEASE_NAME="PR-${SOURCE_BRANCH}"
+
+                      echo "=============================================="
+                      echo "PR CONTEXT"
+                      echo "=============================================="
+                      echo "Source branch: $SOURCE_BRANCH"
+                      echo "Pull request number: $PR_NUMBER"
+                      echo "Release name: $RELEASE_NAME"
+
+                      export SOURCE_BRANCH
+                      export RELEASE_NAME
+                    outputVariables:
+                      - name: SOURCE_BRANCH
+                        type: String
+                        value: SOURCE_BRANCH
+                      - name: RELEASE_NAME
+                        type: String
+                        value: RELEASE_NAME
+              - step:
+                  type: Run
+                  name: PR_Vulnerability_Gate
+                  identifier: PR_Vulnerability_Gate
+                  when:
+                    stageStatus: Success
+                  spec:
+                    shell: Sh
+                    command: |-
+                      set -e
+
+                      VULN_COUNT="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+                      HAS_VULNS="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
+
+                      echo "=============================================="
+                      echo "PR SECURITY GATE"
+                      echo "=============================================="
+                      echo "Vulnerabilities found: ${VULN_COUNT}"
+                      echo "HAS_VULNS: ${HAS_VULNS}"
+
+                      if [ -z "$VULN_COUNT" ] || [ "$VULN_COUNT" = "null" ] || [ "$HAS_VULNS" = "null" ] || [ -z "$HAS_VULNS" ]; then
+                        echo "ERROR: Vulnerability outputs were not produced by the parser."
+                        exit 1
+                      fi
+
+                      if [ "$HAS_VULNS" = "true" ]; then
+                        echo "SECURITY GATE FAILED."
+                        echo "The PR contains vulnerabilities."
+                        if [ "<+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.FLOW>" = "SECURITY_PR" ]; then
+                          echo "New findings were added as child tickets to Epic <+pipeline.stages.Release_Queue.spec.execution.steps.Generate_Release_Version.output.outputVariables.SECURITY_EPIC_KEY>."
+                        else
+                          echo "This PR execution will not create Jira tickets or a security branch."
+                        fi
+                        echo "Fix the vulnerabilities and rerun the PR validation."
+                        exit 1
+                      fi
+
+                      echo "SECURITY GATE PASSED."
+                      echo "No vulnerabilities were found in this PR scan."
     - stage:
         name: PR_Merge_Closure
         identifier: PR_Merge_Closure
@@ -1269,6 +1331,14 @@ pipeline:
                           else
                             MERGED="false"
                           fi
+
+                          case "$SOURCE_BRANCH" in
+                            security/*) ;;
+                            *)
+                              echo "PR #${PR_NUMBER} is from ${SOURCE_BRANCH}, not a security/<EPIC> branch. Nothing to close."
+                              exit 0
+                              ;;
+                          esac
 
                           EPIC_KEY="$(echo "$SOURCE_BRANCH" | sed 's#^security/##')"
 
@@ -1344,4 +1414,4 @@ pipeline:
                       - name: JIRA_API_TOKEN
                         type: String
                         value: <+secrets.getValue("cegeka-poc-jira")>
-                    timeout: 10m
+                  timeout: 10m
