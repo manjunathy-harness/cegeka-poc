@@ -38,7 +38,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+trigger.type> == "Scheduled" || <+trigger.event> == "PR"
+          condition: (<+codebase.build.type> == "PR") || (<+codebase.build.type> == "branch")
         spec:
           execution:
             steps:
@@ -70,10 +70,11 @@ pipeline:
                           REPO="cegeka-poc"
                           TRIGGER_TYPE="<+trigger.type>"
                           TRIGGER_EVENT="<+trigger.event>"
+                          CODEBASE_BUILD_TYPE="<+codebase.build.type>"
                           SOURCE_BRANCH="<+trigger.sourceBranch>"
                           PR_NUMBER="<+trigger.prNumber>"
 
-                          if [ "$TRIGGER_EVENT" = "PR" ]; then
+                          if [ "$CODEBASE_BUILD_TYPE" = "PR" ]; then
                             if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
                               echo "ERROR: PR source branch is empty."
                               exit 1
@@ -94,6 +95,7 @@ pipeline:
                           echo "Flow          : ${FLOW}"
                           echo "Trigger type  : ${TRIGGER_TYPE}"
                           echo "Trigger event : ${TRIGGER_EVENT}"
+                          echo "Codebase type  : ${CODEBASE_BUILD_TYPE}"
                           echo "GitHub User   : ${GITHUB_USER}"
                           echo "Repository    : ${GITHUB_USER}/${REPO}"
                           echo "Branch        : ${BRANCH}"
@@ -292,7 +294,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+trigger.type> == "Scheduled" || <+trigger.event> == "PR"
+          condition: (<+codebase.build.type> == "PR") || (<+codebase.build.type> == "branch")
         spec:
           cloneCodebase: true
           platform:
@@ -555,7 +557,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+trigger.event> == "PR"
+          condition: <+codebase.build.type> == "PR"
         spec:
           cloneCodebase: true
           platform:
@@ -646,7 +648,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: (<+codebase.build.type> == "branch") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -1103,7 +1105,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+trigger.type> == "Scheduled") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+codebase.build.type> == "branch") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
@@ -1268,7 +1270,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+trigger.event> == "PR") && (<+trigger.payload.action> == "closed") && (<+trigger.payload.pull_request.merged> == true)
+          condition: (<+trigger.payload.action> == "closed") && (<+trigger.payload.pull_request.merged> == true)
         spec:
           execution:
             steps:
