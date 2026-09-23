@@ -38,7 +38,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "PR") || (<+codebase.build.type> == "branch")
+          condition: (<+pipeline.properties.ci.codebase.build.type> == "PR") || (<+pipeline.properties.ci.codebase.build.type> == "branch")
         spec:
           execution:
             steps:
@@ -70,7 +70,7 @@ pipeline:
                           REPO="cegeka-poc"
                           TRIGGER_TYPE="<+trigger.type>"
                           TRIGGER_EVENT="<+trigger.event>"
-                          CODEBASE_BUILD_TYPE="<+codebase.build.type>"
+                          CODEBASE_BUILD_TYPE="<+pipeline.properties.ci.codebase.build.type>"
                           SOURCE_BRANCH="<+trigger.sourceBranch>"
                           PR_NUMBER="<+trigger.prNumber>"
 
@@ -296,7 +296,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "PR") || (<+codebase.build.type> == "branch")
+          condition: (<+pipeline.properties.ci.codebase.build.type> == "PR") || (<+pipeline.properties.ci.codebase.build.type> == "branch")
         spec:
           cloneCodebase: true
           platform:
@@ -559,7 +559,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "PR") || (<+trigger.event> == "PR")
+          condition: (<+pipeline.properties.ci.codebase.build.type> == "PR") || (<+trigger.event> == "PR")
         spec:
           cloneCodebase: true
           platform:
@@ -584,7 +584,7 @@ pipeline:
 
                       echo "Trigger type: <+trigger.type>"
                       echo "Trigger event: <+trigger.event>"
-                      echo "Codebase build type: <+codebase.build.type>"
+                      echo "Codebase build type: <+pipeline.properties.ci.codebase.build.type>"
 
                       if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
                         echo "ERROR: Source branch is empty."
@@ -650,7 +650,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
+          condition: (<+pipeline.properties.ci.codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true")
         spec:
           execution:
             steps:
@@ -1107,7 +1107,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: (<+codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
+          condition: (<+pipeline.properties.ci.codebase.build.type> == "branch") && (<+trigger.event> != "PR") && (<+pipeline.stages.Build_And_Scan.spec.execution.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS> == "true") && (<+pipeline.stages.Jira_Automation.spec.execution.steps.Resolve_Active_Remediation_Epic.output.outputVariables.NEW_REMEDIATION_CYCLE> == "true")
         spec:
           execution:
             steps:
