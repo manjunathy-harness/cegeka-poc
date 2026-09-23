@@ -1,5 +1,6 @@
 inputSet:
   name: pr-validation
+  tags: {}
   identifier: prvalidation
   orgIdentifier: default
   projectIdentifier: Manjunath_Sandbox
@@ -8,8 +9,7 @@ inputSet:
     properties:
       ci:
         codebase:
-          build: <+input>
-    variables:
-      - name: execution_mode
-        type: String
-        value: PR
+          build:
+            type: PR
+            spec:
+              number: <+trigger.prNumber>
