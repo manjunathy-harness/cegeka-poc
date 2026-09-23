@@ -574,6 +574,45 @@ pipeline:
                         type: String
                         value: HAS_VULNS
     - stage:
+        name: get evidence
+        identifier: get_evidence
+        description: ""
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - stepGroup:
+                  name: pick json vul
+                  identifier: pick_json_vul
+                  steps:
+                    - step:
+                        type: DownloadAwsS3
+                        name: DownloadAwsS3_1
+                        identifier: DownloadAwsS3_1
+                        spec: {}
+                    - step:
+                        type: Run
+                        name: Run_1 read json and give output in var
+                        identifier: Run_1_read_json_and_give_output_in_var
+                        spec:
+                          image: <+input>
+                          shell: Sh
+                  stepGroupInfra:
+                    type: KubernetesDirect
+                    spec:
+                      connectorRef: account.aws_smp_infra
+              - step:
+                  type: Policy
+                  name: Policy_1
+                  identifier: Policy_1
+                  spec:
+                    policySets: <+input>
+                    type: Custom
+                    policySpec:
+                      payload: "# output from previous step"
+                  timeout: 10m
+        tags: {}
+    - stage:
         name: Jira_Automation
         identifier: Jira_Automation
         type: Custom
