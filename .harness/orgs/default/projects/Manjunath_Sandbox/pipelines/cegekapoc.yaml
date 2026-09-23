@@ -38,7 +38,7 @@ pipeline:
         type: Custom
         when:
           pipelineStatus: Success
-          condition: <+trigger.type> == "Scheduled"
+          condition: <+trigger.type> == "Scheduled" || <+trigger.event> == "PR"
         spec:
           execution:
             steps:
@@ -63,16 +63,43 @@ pipeline:
                           set -e
 
                           echo "=============================================="
-                          echo "CEGEKA RELEASE VERSION GENERATION"
+                          echo "CEGEKA RELEASE / TAG GENERATION"
                           echo "=============================================="
 
                           GITHUB_USER="manjunathy-harness"
                           REPO="cegeka-poc"
-                          BRANCH="main"
+                          TRIGGER_TYPE="<+trigger.type>"
+                          TRIGGER_EVENT="<+trigger.event>"
+                          SOURCE_BRANCH="<+trigger.sourceBranch>"
+                          PR_NUMBER="<+trigger.prNumber>"
 
-                          echo "GitHub User: ${GITHUB_USER}"
-                          echo "Repository: ${GITHUB_USER}/${REPO}"
-                          echo "Branch: ${BRANCH}"
+                          if [ "$TRIGGER_EVENT" = "PR" ]; then
+                            if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" = "null" ]; then
+                              echo "ERROR: PR source branch is empty."
+                              exit 1
+                            fi
+
+                            if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+                              echo "ERROR: PR number is empty."
+                              exit 1
+                            fi
+
+                            BRANCH="$SOURCE_BRANCH"
+                            FLOW="PR"
+                          else
+                            BRANCH="main"
+                            FLOW="WEEKLY"
+                          fi
+
+                          echo "Flow          : ${FLOW}"
+                          echo "Trigger type  : ${TRIGGER_TYPE}"
+                          echo "Trigger event : ${TRIGGER_EVENT}"
+                          echo "GitHub User   : ${GITHUB_USER}"
+                          echo "Repository    : ${GITHUB_USER}/${REPO}"
+                          echo "Branch        : ${BRANCH}"
+                          if [ "$FLOW" = "PR" ]; then
+                            echo "PR number     : ${PR_NUMBER}"
+                          fi
 
                           echo "=============================================="
                           echo "VALIDATING GITHUB TOKEN"
@@ -85,7 +112,6 @@ pipeline:
 
                           TOKEN_LENGTH="${#GITHUB_TOKEN}"
                           TOKEN_SHA256="$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')"
-
                           echo "Token length: ${TOKEN_LENGTH}"
                           echo "Token SHA256: ${TOKEN_SHA256}"
 
@@ -107,7 +133,6 @@ pipeline:
                           echo "GitHub authentication: SUCCESS"
 
                           GITHUB_LOGIN="$(sed -n 's/.*"login":"\([^"]*\)".*/\1/p' /tmp/github_user.json | head -1)"
-
                           echo "GitHub user: ${GITHUB_LOGIN}"
 
                           echo "=============================================="
@@ -136,7 +161,6 @@ pipeline:
                           echo "=============================================="
 
                           WORK_DIR="/tmp/cegeka-release"
-
                           rm -rf "$WORK_DIR"
 
                           git clone \
@@ -145,88 +169,96 @@ pipeline:
                             "$WORK_DIR"
 
                           cd "$WORK_DIR"
-
                           git fetch --tags --force origin
 
+                          HEAD_SHA="$(git rev-parse HEAD)"
+                          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+
+                          echo "Checked out commit: ${HEAD_SHA}"
+
                           echo "=============================================="
-                          echo "EXISTING RELEASE TAGS"
+                          echo "GENERATING TAG"
                           echo "=============================================="
 
-                          git tag -l |
-                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
-                            sort -V || true
-
-                          LATEST_TAG="$(
-                            git tag -l |
-                            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' |
-                            sort -V |
-                            tail -1
-                          )"
-
-                          if [ -z "$LATEST_TAG" ]; then
-                            NEW_TAG="v1.0.0.1"
+                          if [ "$FLOW" = "PR" ]; then
+                            # PR tags are unique to the PR commit and do not consume weekly release numbers.
+                            NEW_TAG="pr-${PR_NUMBER}-${SHORT_SHA}"
+                            RELEASE_NAME="$NEW_TAG"
                           else
-                            VERSION="${LATEST_TAG#v}"
+                            echo "EXISTING WEEKLY RELEASE TAGS"
+                            git tag -l | \
+                              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
+                              sort -V || true
 
-                            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
-                            MINOR="$(echo "$VERSION" | cut -d. -f2)"
-                            PATCH="$(echo "$VERSION" | cut -d. -f3)"
-                            BUILD="$(echo "$VERSION" | cut -d. -f4)"
+                            LATEST_TAG="$(
+                              git tag -l | \
+                              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
+                              sort -V | \
+                              tail -1
+                            )"
 
-                            BUILD=$((BUILD + 1))
+                            if [ -z "$LATEST_TAG" ]; then
+                              NEW_TAG="v1.0.0.1"
+                            else
+                              VERSION="${LATEST_TAG#v}"
+                              MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+                              MINOR="$(echo "$VERSION" | cut -d. -f2)"
+                              PATCH="$(echo "$VERSION" | cut -d. -f3)"
+                              BUILD="$(echo "$VERSION" | cut -d. -f4)"
+                              BUILD=$((BUILD + 1))
+                              NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
+                            fi
 
-                            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${BUILD}"
+                            RELEASE_NAME="${NEW_TAG#v}"
                           fi
 
-                          RELEASE_NAME="${NEW_TAG#v}"
+                          echo "Flow        : ${FLOW}"
+                          echo "Commit      : ${HEAD_SHA}"
+                          echo "New tag     : ${NEW_TAG}"
+                          echo "Release     : ${RELEASE_NAME}"
 
                           echo "=============================================="
-                          echo "RELEASE VERSION"
-                          echo "=============================================="
-
-                          echo "Latest tag : ${LATEST_TAG:-NONE}"
-                          echo "New tag    : ${NEW_TAG}"
-                          echo "Release    : ${RELEASE_NAME}"
-
-                          echo "=============================================="
-                          echo "CREATING GIT TAG"
+                          echo "CREATING / VERIFYING GIT TAG"
                           echo "=============================================="
 
                           git config user.name "Harness Release Automation"
                           git config user.email "harness-release@harness.io"
 
-                          git tag "$NEW_TAG" "$(git rev-parse HEAD)"
+                          EXISTING_TAG_SHA="$(git ls-remote --tags origin "refs/tags/${NEW_TAG}" | awk '{print $1}' | head -1 || true)"
 
-                          echo "Local tag created: ${NEW_TAG}"
+                          if [ -n "$EXISTING_TAG_SHA" ]; then
+                            if [ "$EXISTING_TAG_SHA" = "$HEAD_SHA" ]; then
+                              echo "Tag already exists on the expected commit: ${NEW_TAG}"
+                            else
+                              echo "ERROR: Tag ${NEW_TAG} already exists on a different commit."
+                              echo "Existing commit: ${EXISTING_TAG_SHA}"
+                              echo "Expected commit: ${HEAD_SHA}"
+                              exit 1
+                            fi
+                          else
+                            git tag "$NEW_TAG" "$HEAD_SHA"
+                            echo "Local tag created: ${NEW_TAG}"
 
-                          echo "=============================================="
-                          echo "PUSHING TAG TO GITHUB"
-                          echo "=============================================="
+                            GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
+                            rm -f "$GIT_CREDENTIAL_FILE"
+                            printf 'https://%s:%s@github.com\n' \
+                              "$GITHUB_USER" \
+                              "$GITHUB_TOKEN" \
+                              > "$GIT_CREDENTIAL_FILE"
+                            chmod 600 "$GIT_CREDENTIAL_FILE"
+                            git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
 
-                          GIT_CREDENTIAL_FILE="/tmp/cegeka-git-credentials"
+                            echo "PUSHING TAG TO GITHUB"
+                            git push origin "$NEW_TAG"
+                            rm -f "$GIT_CREDENTIAL_FILE"
 
-                          rm -f "$GIT_CREDENTIAL_FILE"
-
-                          printf 'https://%s:%s@github.com\n' \
-                            "$GITHUB_USER" \
-                            "$GITHUB_TOKEN" \
-                            > "$GIT_CREDENTIAL_FILE"
-
-                          chmod 600 "$GIT_CREDENTIAL_FILE"
-
-                          git config credential.helper "store --file=${GIT_CREDENTIAL_FILE}"
-
-                          git push origin "$NEW_TAG"
-
-                          echo "Git tag pushed successfully: ${NEW_TAG}"
+                            echo "Git tag pushed successfully: ${NEW_TAG}"
+                          fi
 
                           echo "=============================================="
                           echo "VERIFYING REMOTE TAG"
                           echo "=============================================="
-
-                          git ls-remote --tags origin "$NEW_TAG"
-
-                          rm -f "$GIT_CREDENTIAL_FILE"
+                          git ls-remote --tags origin "refs/tags/${NEW_TAG}"
 
                           echo "=============================================="
                           echo "RELEASE GENERATION COMPLETE"
@@ -234,6 +266,8 @@ pipeline:
 
                           export RELEASE_NAME
                           export RELEASE_TAG="$NEW_TAG"
+                          export SOURCE_BRANCH="$BRANCH"
+                          export FLOW
                     environmentVariables:
                       - name: GITHUB_TOKEN
                         type: Secret
@@ -245,6 +279,12 @@ pipeline:
                       - name: RELEASE_TAG
                         type: String
                         value: RELEASE_TAG
+                      - name: SOURCE_BRANCH
+                        type: String
+                        value: SOURCE_BRANCH
+                      - name: FLOW
+                        type: String
+                        value: FLOW
                     timeout: 10m
     - stage:
         name: Build_And_Scan
@@ -252,7 +292,7 @@ pipeline:
         type: CI
         when:
           pipelineStatus: Success
-          condition: <+trigger.type> == "Scheduled"
+          condition: <+trigger.type> == "Scheduled" || <+trigger.event> == "PR"
         spec:
           cloneCodebase: true
           platform:
@@ -951,17 +991,6 @@ pipeline:
                       - name: RELEASE_NAME
                         type: String
                         value: RELEASE_NAME
-              - stepGroup:
-                  name: Common_Security_Scan
-                  identifier: Common_Security_Scan
-                  template:
-                    templateRef: Cegeka_Common_Security_Scan
-                    versionLabel: v1
-                    templateInputs:
-                      variables:
-                        - name: RELEASE_NAME
-                          type: String
-                          value: <+pipeline.stages.PR_Security_Validation.spec.execution.steps.PR_Context.output.outputVariables.RELEASE_NAME>
               - step:
                   type: Run
                   name: PR_Vulnerability_Gate
@@ -973,8 +1002,8 @@ pipeline:
                     command: |-
                       set -e
 
-                      VULN_COUNT="<+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
-                      HAS_VULNS="<+execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
+                      VULN_COUNT="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.VULN_COUNT>"
+                      HAS_VULNS="<+pipeline.stages.Build_And_Scan.spec.execution.steps.Common_Security_Scan.steps.Parse_Vulnerabilities.output.outputVariables.HAS_VULNS>"
 
                       echo "=============================================="
                       echo "PR SECURITY GATE"
