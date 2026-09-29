@@ -1,0 +1,265 @@
+pipeline:
+  name: deploy-svc
+  identifier: deploysvc
+  projectIdentifier: Manjunath_Sandbox
+  orgIdentifier: default
+  tags: {}
+  description: |
+    Deploy a vulnerability patch for several services to ONE environment.
+
+    - No lifecycle: at Run time pick the ONE stage (= environment) to execute.
+    - Every service is one iteration of a repeat loop, maxConcurrency 1,
+      so services go one at a time (infra team requirement).
+    - onFailure: ignore on the loop -> a failed service does NOT cancel the
+      services still queued behind it.
+    - Each iteration is its own node in the stage view: green = patched,
+      red = failed and rolled back (PR reverted).
+
+    Input "patches" format: <serviceId>:<tag>,<serviceId>:<tag>   (no spaces)
+    e.g. orders:1.8.3-p1,payments:2.4.1-p1,billing:3.0.9-p2
+  allowStageExecutions: true
+  variables:
+    - name: patches
+      type: String
+      description: Comma-separated serviceId:tag pairs, no spaces
+      required: true
+      value: <+input>
+    - name: imageRepo
+      type: String
+      description: Registry namespace. Image = <imageRepo>/<service.variables.imageName>:<tag>
+      required: true
+      value: pkg.harness.io/am8hcbditxgqnrtihnl7qq/sruthi-docker
+    - name: gitopsAgentId
+      type: String
+      required: true
+      value: <+input>
+    - name: gitopsCluster
+      type: String
+      required: true
+      value: <+input>
+  stages:
+    - stage:
+        name: Deploy Dev
+        identifier: deploy_dev
+        type: Deployment
+        spec:
+          deploymentType: Kubernetes
+          gitOpsEnabled: true
+          service:
+            serviceRef: <+<+repeat.item>.split(":")[0]>
+          environment:
+            environmentRef: dev
+            deployToAll: false
+            gitOpsClusters:
+              - identifier: <+pipeline.variables.gitopsCluster>
+          execution:
+            steps:
+              - step:
+                  type: GitOpsUpdateReleaseRepo
+                  name: Update Release Repo
+                  identifier: update_release_repo
+                  timeout: 10m
+                  spec:
+                    variables:
+                      - name: spec.template.spec.containers[0].image
+                        type: String
+                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+<+repeat.item>.split(":")[1]>
+              - step:
+                  type: MergePR
+                  name: Merge PR
+                  identifier: merge_pr
+                  timeout: 10m
+                  spec:
+                    deleteSourceBranch: true
+                    mergeStrategy: squash
+                    variables: []
+              - step:
+                  type: GitOpsSync
+                  name: Sync App
+                  identifier: sync_app
+                  timeout: 15m
+                  spec:
+                    prune: true
+                    dryRun: false
+                    applyOnly: false
+                    forceApply: false
+                    applicationsList:
+                      - applicationName: <+service.variables.gitopsAppPrefix>-<+env.identifier>
+                        agentId: <+pipeline.variables.gitopsAgentId>
+                    syncOptions:
+                      skipSchemaValidation: false
+                      autoCreateNamespace: true
+                      pruneResourcesAtLast: false
+                      applyOutOfSyncOnly: false
+                      replaceResources: false
+                      prunePropagationPolicy: foreground
+            rollbackSteps:
+              - step:
+                  type: RevertPR
+                  name: Revert PR
+                  identifier: revert_pr
+                  timeout: 10m
+                  spec:
+                    commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
+        strategy:
+          repeat:
+            items: <+pipeline.variables.patches.split(",")>
+            maxConcurrency: 1
+            nodeName: <+repeat.item>
+            onFailure: ignore
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+    - stage:
+        name: Deploy Test
+        identifier: deploy_test
+        type: Deployment
+        spec:
+          deploymentType: Kubernetes
+          gitOpsEnabled: true
+          service:
+            serviceRef: <+<+repeat.item>.split(":")[0]>
+          environment:
+            environmentRef: test
+            deployToAll: false
+            gitOpsClusters:
+              - identifier: <+pipeline.variables.gitopsCluster>
+          execution:
+            steps:
+              - step:
+                  type: GitOpsUpdateReleaseRepo
+                  name: Update Release Repo
+                  identifier: update_release_repo
+                  timeout: 10m
+                  spec:
+                    variables:
+                      - name: spec.template.spec.containers[0].image
+                        type: String
+                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+<+repeat.item>.split(":")[1]>
+              - step:
+                  type: MergePR
+                  name: Merge PR
+                  identifier: merge_pr
+                  timeout: 10m
+                  spec:
+                    deleteSourceBranch: true
+                    mergeStrategy: squash
+                    variables: []
+              - step:
+                  type: GitOpsSync
+                  name: Sync App
+                  identifier: sync_app
+                  timeout: 15m
+                  spec:
+                    prune: true
+                    dryRun: false
+                    applyOnly: false
+                    forceApply: false
+                    applicationsList:
+                      - applicationName: <+service.variables.gitopsAppPrefix>-<+env.identifier>
+                        agentId: <+pipeline.variables.gitopsAgentId>
+                    syncOptions:
+                      skipSchemaValidation: false
+                      autoCreateNamespace: true
+                      pruneResourcesAtLast: false
+                      applyOutOfSyncOnly: false
+                      replaceResources: false
+                      prunePropagationPolicy: foreground
+            rollbackSteps:
+              - step:
+                  type: RevertPR
+                  name: Revert PR
+                  identifier: revert_pr
+                  timeout: 10m
+                  spec:
+                    commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
+        strategy:
+          repeat:
+            items: <+pipeline.variables.patches.split(",")>
+            maxConcurrency: 1
+            nodeName: <+repeat.item>
+            onFailure: ignore
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+    - stage:
+        name: Deploy Prod
+        identifier: deploy_prod
+        type: Deployment
+        spec:
+          deploymentType: Kubernetes
+          gitOpsEnabled: true
+          service:
+            serviceRef: <+<+repeat.item>.split(":")[0]>
+          environment:
+            environmentRef: prod
+            deployToAll: false
+            gitOpsClusters:
+              - identifier: <+pipeline.variables.gitopsCluster>
+          execution:
+            steps:
+              - step:
+                  type: GitOpsUpdateReleaseRepo
+                  name: Update Release Repo
+                  identifier: update_release_repo
+                  timeout: 10m
+                  spec:
+                    variables:
+                      - name: spec.template.spec.containers[0].image
+                        type: String
+                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+<+repeat.item>.split(":")[1]>
+              - step:
+                  type: MergePR
+                  name: Merge PR
+                  identifier: merge_pr
+                  timeout: 10m
+                  spec:
+                    deleteSourceBranch: true
+                    mergeStrategy: squash
+                    variables: []
+              - step:
+                  type: GitOpsSync
+                  name: Sync App
+                  identifier: sync_app
+                  timeout: 15m
+                  spec:
+                    prune: true
+                    dryRun: false
+                    applyOnly: false
+                    forceApply: false
+                    applicationsList:
+                      - applicationName: <+service.variables.gitopsAppPrefix>-<+env.identifier>
+                        agentId: <+pipeline.variables.gitopsAgentId>
+                    syncOptions:
+                      skipSchemaValidation: false
+                      autoCreateNamespace: true
+                      pruneResourcesAtLast: false
+                      applyOutOfSyncOnly: false
+                      replaceResources: false
+                      prunePropagationPolicy: foreground
+            rollbackSteps:
+              - step:
+                  type: RevertPR
+                  name: Revert PR
+                  identifier: revert_pr
+                  timeout: 10m
+                  spec:
+                    commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
+        strategy:
+          repeat:
+            items: <+pipeline.variables.patches.split(",")>
+            maxConcurrency: 1
+            nodeName: <+repeat.item>
+            onFailure: ignore
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
