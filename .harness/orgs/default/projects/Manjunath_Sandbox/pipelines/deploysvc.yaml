@@ -252,6 +252,7 @@ pipeline:
                 - AllErrors
               action:
                 type: StageRollback
+        tags: {}
     - stage:
         name: Deploy Prod
         identifier: deploy_prod
