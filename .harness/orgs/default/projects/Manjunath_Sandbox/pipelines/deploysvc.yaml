@@ -8,11 +8,11 @@ pipeline:
     Deploy a vulnerability patch for several services to ONE environment.
 
     - No lifecycle: at Run time pick the ONE stage (= environment) to execute.
-    - Every service is one iteration of a repeat loop, maxConcurrency 1,
-      so services go one at a time (infra team requirement).
-    - onFailure: ignore on the loop -> a failed service does NOT cancel the
-      services still queued behind it.
-    - Each iteration is its own node in the stage view: green = patched,
+    - The stage uses Harness multi-service deployment with parallel service strategy.
+    - Infrastructure requires maxConcurrency = 1, so Harness schedules one service at a time
+      while retaining the multi-service parallel strategy and per-service failure isolation.
+    - In parallel multi-service mode, a failed service does NOT block the other services.
+    - Each service is represented separately in the stage view: green = patched,
       red = failed and rolled back (PR reverted).
 
     Input "patches" format: <serviceId>:<tag>,<serviceId>:<tag>   (no spaces)
@@ -45,8 +45,15 @@ pipeline:
         spec:
           deploymentType: Kubernetes
           gitOpsEnabled: true
-          service:
-            serviceRef: <+<+repeat.item>.split(":")[0]>
+          services:
+            values:
+              - serviceRef: orders
+              - serviceRef: payments
+              - serviceRef: billing
+            metadata:
+              parallel: true
+          multiDeploymentConfig:
+            maxConcurrency: 1
           environment:
             environmentRef: dev
             deployToAll: false
@@ -54,6 +61,37 @@ pipeline:
               - identifier: <+pipeline.variables.gitopsCluster>
           execution:
             steps:
+              - step:
+                  type: ShellScript
+                  name: Resolve Patch Tag
+                  identifier: resolve_patch_tag
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    executionTarget: {}
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          set -euo pipefail
+
+                          SERVICE_ID="<+service.identifier>"
+                          PATCHES="<+pipeline.variables.patches>"
+
+                          PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
+
+                          if [ -z "$PATCH_TAG" ]; then
+                            echo "No patch tag found for service: $SERVICE_ID"
+                            exit 1
+                          fi
+
+                          echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
+                          echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
+                    environmentVariables: []
+                    outputVariables:
+                      - name: PATCH_TAG
+                        type: String
+                        value: PATCH_TAG
               - step:
                   type: GitOpsUpdateReleaseRepo
                   name: Update Release Repo
@@ -63,7 +101,7 @@ pipeline:
                     variables:
                       - name: spec.template.spec.containers[0].image
                         type: String
-                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+<+repeat.item>.split(":")[1]>
+                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG>
               - step:
                   type: MergePR
                   name: Merge PR
@@ -101,12 +139,6 @@ pipeline:
                   timeout: 10m
                   spec:
                     commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
-        strategy:
-          repeat:
-            items: <+pipeline.variables.patches.split(",")>
-            maxConcurrency: 1
-            nodeName: <+repeat.item>
-            onFailure: ignore
         failureStrategies:
           - onFailure:
               errors:
@@ -120,8 +152,15 @@ pipeline:
         spec:
           deploymentType: Kubernetes
           gitOpsEnabled: true
-          service:
-            serviceRef: <+<+repeat.item>.split(":")[0]>
+          services:
+            values:
+              - serviceRef: orders
+              - serviceRef: payments
+              - serviceRef: billing
+            metadata:
+              parallel: true
+          multiDeploymentConfig:
+            maxConcurrency: 1
           environment:
             environmentRef: test
             deployToAll: false
@@ -129,6 +168,37 @@ pipeline:
               - identifier: <+pipeline.variables.gitopsCluster>
           execution:
             steps:
+              - step:
+                  type: ShellScript
+                  name: Resolve Patch Tag
+                  identifier: resolve_patch_tag
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    executionTarget: {}
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          set -euo pipefail
+
+                          SERVICE_ID="<+service.identifier>"
+                          PATCHES="<+pipeline.variables.patches>"
+
+                          PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
+
+                          if [ -z "$PATCH_TAG" ]; then
+                            echo "No patch tag found for service: $SERVICE_ID"
+                            exit 1
+                          fi
+
+                          echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
+                          echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
+                    environmentVariables: []
+                    outputVariables:
+                      - name: PATCH_TAG
+                        type: String
+                        value: PATCH_TAG
               - step:
                   type: GitOpsUpdateReleaseRepo
                   name: Update Release Repo
@@ -138,7 +208,7 @@ pipeline:
                     variables:
                       - name: spec.template.spec.containers[0].image
                         type: String
-                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+<+repeat.item>.split(":")[1]>
+                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG>
               - step:
                   type: MergePR
                   name: Merge PR
@@ -176,12 +246,6 @@ pipeline:
                   timeout: 10m
                   spec:
                     commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
-        strategy:
-          repeat:
-            items: <+pipeline.variables.patches.split(",")>
-            maxConcurrency: 1
-            nodeName: <+repeat.item>
-            onFailure: ignore
         failureStrategies:
           - onFailure:
               errors:
@@ -195,8 +259,15 @@ pipeline:
         spec:
           deploymentType: Kubernetes
           gitOpsEnabled: true
-          service:
-            serviceRef: <+<+repeat.item>.split(":")[0]>
+          services:
+            values:
+              - serviceRef: orders
+              - serviceRef: payments
+              - serviceRef: billing
+            metadata:
+              parallel: true
+          multiDeploymentConfig:
+            maxConcurrency: 1
           environment:
             environmentRef: prod
             deployToAll: false
@@ -204,6 +275,37 @@ pipeline:
               - identifier: <+pipeline.variables.gitopsCluster>
           execution:
             steps:
+              - step:
+                  type: ShellScript
+                  name: Resolve Patch Tag
+                  identifier: resolve_patch_tag
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    executionTarget: {}
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          set -euo pipefail
+
+                          SERVICE_ID="<+service.identifier>"
+                          PATCHES="<+pipeline.variables.patches>"
+
+                          PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
+
+                          if [ -z "$PATCH_TAG" ]; then
+                            echo "No patch tag found for service: $SERVICE_ID"
+                            exit 1
+                          fi
+
+                          echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
+                          echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
+                    environmentVariables: []
+                    outputVariables:
+                      - name: PATCH_TAG
+                        type: String
+                        value: PATCH_TAG
               - step:
                   type: GitOpsUpdateReleaseRepo
                   name: Update Release Repo
@@ -213,7 +315,7 @@ pipeline:
                     variables:
                       - name: spec.template.spec.containers[0].image
                         type: String
-                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+<+repeat.item>.split(":")[1]>
+                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG>
               - step:
                   type: MergePR
                   name: Merge PR
@@ -251,12 +353,6 @@ pipeline:
                   timeout: 10m
                   spec:
                     commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
-        strategy:
-          repeat:
-            items: <+pipeline.variables.patches.split(",")>
-            maxConcurrency: 1
-            nodeName: <+repeat.item>
-            onFailure: ignore
         failureStrategies:
           - onFailure:
               errors:
