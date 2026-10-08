@@ -6,18 +6,19 @@ pipeline:
   tags: {}
   description: |
     Jira-scheduled deploy to DEV.
-
     A cron trigger runs this pipeline every few minutes. Stage 1 asks Jira for the oldest ticket
-    that has the deploy label and whose built-in Start date has arrived (and Due date not passed),
-    claims it, and comments "STARTED". Stage 2 deploys the services listed on the ticket to dev
-    (multi-service parallel GitOps deploy, same as deploy-svc). Stage 3 always runs and comments
-    "COMPLETED" or "FAILED" on the ticket.
-
+    that has the deploy label, has a Deployment Start Date/Time that has arrived, and has a
+    Deployment End Date/Time that has not passed. It claims the ticket and comments "STARTED".
+    Stage 2 deploys the services listed on the ticket to dev (multi-service parallel GitOps deploy,
+    same as deploy-svc). Stage 3 always runs and comments "COMPLETED" or "FAILED" on the ticket.
     Ticket contract (Jira):
       - label:  harness-deploy
-      - Start date / Due date: built-in fields
+      - Deployment Start Date/Time: custom Jira Date Time field
+      - Deployment End Date/Time: custom Jira Date Time field
       - Description contains one line:  patches: orders:1.8.3-p1,payments:2.4.1-p1   (no spaces)
     Services not mentioned in the ticket are skipped.
+    Important: set the two Jira field variables below to the actual custom-field JQL aliases,
+    for example cf[12345]. The fields must be Jira Date Time fields, not Date-only fields.
   allowStageExecutions: true
   variables:
     - name: imageRepo
@@ -47,9 +48,19 @@ pipeline:
       description: Added when a ticket is picked up so it is never deployed twice
       required: false
       value: harness-started
+    - name: jira_start_datetime_jql_field
+      type: String
+      description: JQL alias for the Jira Date Time field used as deployment start time, for example cf[12345]
+      required: true
+      value: cf[REPLACE_WITH_START_FIELD_ID]
+    - name: jira_end_datetime_jql_field
+      type: String
+      description: JQL alias for the Jira Date Time field used as deployment end time, for example cf[12346]
+      required: true
+      value: cf[REPLACE_WITH_END_FIELD_ID]
   stages:
     - stage:
-        name: Find Due Ticket
+        name: Find Active Ticket
         identifier: Find_Due_Ticket
         type: Custom
         spec:
@@ -75,12 +86,10 @@ pipeline:
                       spec:
                         script: |-
                           set -e
-
                           # Jira API v2 is used for the issue read (plain-text description);
                           # same gateway, no jq/python needed on the delegate.
                           API3="$JIRA_API_BASE"
                           API2="${JIRA_API_BASE%/3}/2"
-
                           jira_comment() {
                             # $1 = issue key, $2 = text (must not contain double quotes)
                             BODY="$(printf '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"%s"}]}]}}' "$2")"
@@ -89,7 +98,6 @@ pipeline:
                               -H "Accept: application/json" -H "Content-Type: application/json" \
                               "${API3}/issue/$1/comment" --data "$BODY" >/dev/null
                           }
-
                           jira_add_label() {
                             curl -sS -o /dev/null -w "%{http_code}" \
                               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X PUT \
@@ -97,45 +105,44 @@ pipeline:
                               "${API3}/issue/$1" \
                               --data "$(printf '{"update":{"labels":[{"add":"%s"}]}}' "$2")" >/dev/null
                           }
-
                           TICKET_KEY="NONE"
                           PATCHES="NONE"
-
-                          # Built-in Start date / Due date. JQL uses single quotes to avoid JSON escaping.
-                          JQL="project = ${PROJECT} AND labels = '${DEPLOY_LABEL}' AND labels != '${CLAIMED_LABEL}' AND 'Start date' <= now() AND (duedate is EMPTY OR duedate >= startOfDay()) AND statusCategory != Done ORDER BY 'Start date' ASC"
+                          if ! printf '%s' "$START_FIELD" | grep -Eq '^cf\[[0-9]+\]$'; then
+                            echo "ERROR: jira_start_datetime_jql_field must be a JQL custom-field alias such as cf[12345]. Current value: $START_FIELD"
+                            exit 1
+                          fi
+                          if ! printf '%s' "$END_FIELD" | grep -Eq '^cf\[[0-9]+\]$'; then
+                            echo "ERROR: jira_end_datetime_jql_field must be a JQL custom-field alias such as cf[12346]. Current value: $END_FIELD"
+                            exit 1
+                          fi
+                          # Deployment window: start datetime must be reached and end datetime must not be passed.
+                          JQL="project = ${PROJECT} AND labels = '${DEPLOY_LABEL}' AND labels != '${CLAIMED_LABEL}' AND ${START_FIELD} <= now() AND ${END_FIELD} >= now() AND statusCategory != Done ORDER BY ${START_FIELD} ASC"
                           REQUEST_BODY="{\"jql\":\"${JQL}\",\"maxResults\":1,\"fields\":[\"summary\"]}"
-
                           HTTP_CODE="$(curl -sS -o /tmp/jira-due.json -w "%{http_code}" \
                             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X POST \
                             -H "Accept: application/json" -H "Content-Type: application/json" \
                             "${API3}/search/jql" --data "$REQUEST_BODY")"
                           echo "JIRA SEARCH HTTP=$HTTP_CODE"
-
                           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
                             echo "ERROR: Jira search failed"; cat /tmp/jira-due.json; exit 1
                           fi
-
                           KEY="$(grep -oE '"key":"[A-Z][A-Z0-9_]*-[0-9]+"' /tmp/jira-due.json | head -1 | sed -E 's/"key":"([^"]+)"/\1/' || true)"
-
                           if [ -z "$KEY" ]; then
-                            echo "No due tickets. Nothing to deploy."
+                            echo "No active scheduled tickets. Nothing to deploy."
                           else
-                            echo "Due ticket: $KEY"
-
+                            echo "Active scheduled ticket: $KEY"
                             HTTP_CODE="$(curl -sS -o /tmp/jira-issue.json -w "%{http_code}" \
                               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -H "Accept: application/json" \
                               "${API2}/issue/${KEY}?fields=description")"
                             if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
                               echo "ERROR: could not read ${KEY}"; cat /tmp/jira-issue.json; exit 1
                             fi
-
                             # Line in description:  patches: orders:1.8.3-p1,payments:2.4.1-p1
                             RAW="$(tr -d '\n' < /tmp/jira-issue.json | grep -oiE 'patches:[[:space:]]*[A-Za-z0-9_.:,-]+' | head -1 | sed -E 's/^[^:]*:[[:space:]]*//' || true)"
-
                             if printf '%s' "$RAW" | grep -Eq '^[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+(,[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+)*$'; then
                               # Claim first so the next cron run skips this ticket
                               jira_add_label "$KEY" "$CLAIMED_LABEL"
-                              jira_comment "$KEY" "Deployment STARTED at $(date -u '+%Y-%m-%d %H:%M UTC') to dev. Patches: ${RAW}. Harness execution: ${EXECUTION_URL}"
+                              jira_comment "$KEY" "Deployment STARTED at $(date -u '+%Y-%m-%d %H:%M UTC') to dev. The Jira deployment window has started. Patches: ${RAW}. Harness execution: ${EXECUTION_URL}"
                               TICKET_KEY="$KEY"
                               PATCHES="$RAW"
                             else
@@ -144,7 +151,6 @@ pipeline:
                               jira_comment "$KEY" "Scheduled deploy skipped: the description needs a line like patches: orders:1.8.3-p1,payments:2.4.1-p1 (no spaces). Fix it and remove the harness-invalid label to retry."
                             fi
                           fi
-
                           echo "TICKET_KEY=$TICKET_KEY"
                           echo "PATCHES=$PATCHES"
                           export TICKET_KEY
@@ -168,6 +174,12 @@ pipeline:
                       - name: CLAIMED_LABEL
                         type: String
                         value: <+pipeline.variables.jira_claimed_label>
+                      - name: START_FIELD
+                        type: String
+                        value: <+pipeline.variables.jira_start_datetime_jql_field>
+                      - name: END_FIELD
+                        type: String
+                        value: <+pipeline.variables.jira_end_datetime_jql_field>
                       - name: EXECUTION_URL
                         type: String
                         value: <+pipeline.executionUrl>
@@ -217,19 +229,15 @@ pipeline:
                       spec:
                         script: |
                           set -euo pipefail
-
                           SERVICE_ID="<+service.identifier>"
                           PATCHES="<+pipeline.stages.Find_Due_Ticket.spec.execution.steps.Poll_Jira.output.outputVariables.PATCHES>"
-
                           PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
-
                           if [ -z "$PATCH_TAG" ]; then
                             echo "Service $SERVICE_ID is not part of this ticket; skipping."
                             PATCH_TAG="NONE"
                           else
                             echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
                           fi
-
                           echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
                     environmentVariables: []
                     outputVariables:
@@ -324,7 +332,6 @@ pipeline:
                       spec:
                         script: |-
                           set -e
-
                           case "$DEPLOY_STATUS" in
                             SUCCEEDED|Success|SUCCESS)
                               TEXT="Deployment COMPLETED SUCCESSFULLY at $(date -u '+%Y-%m-%d %H:%M UTC') in dev. Patches: ${PATCHES}. Harness execution: ${EXECUTION_URL}"
@@ -333,14 +340,11 @@ pipeline:
                               TEXT="Deployment ENDED WITH STATUS ${DEPLOY_STATUS} at $(date -u '+%Y-%m-%d %H:%M UTC') in dev (failed services were rolled back). Patches: ${PATCHES}. Harness execution: ${EXECUTION_URL}"
                               ;;
                           esac
-
                           BODY="$(printf '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"%s"}]}]}}' "$TEXT")"
-
                           HTTP_CODE="$(curl -sS -o /tmp/jira-comment.json -w "%{http_code}" \
                             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X POST \
                             -H "Accept: application/json" -H "Content-Type: application/json" \
                             "${JIRA_API_BASE}/issue/${TICKET_KEY}/comment" --data "$BODY")"
-
                           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
                             echo "ERROR: Jira comment failed. HTTP=${HTTP_CODE}"; cat /tmp/jira-comment.json; exit 1
                           fi
