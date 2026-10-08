@@ -1,29 +1,25 @@
 pipeline:
-  name: deploy-svc
+  name: deploy-svc-jira
   identifier: deploysvc
   projectIdentifier: Manjunath_Sandbox
   orgIdentifier: default
   tags: {}
   description: |
-    Deploy a vulnerability patch for several services to ONE environment.
+    Jira-scheduled deploy to DEV.
 
-    - No lifecycle: at Run time pick the ONE stage (= environment) to execute.
-    - The stage uses Harness multi-service deployment with parallel service strategy.
-    - Infrastructure requires maxConcurrency = 1, so Harness schedules one service at a time
-      while retaining the multi-service parallel strategy and per-service failure isolation.
-    - In parallel multi-service mode, a failed service does NOT block the other services.
-    - Each service is represented separately in the stage view: green = patched,
-      red = failed and rolled back (PR reverted).
+    A cron trigger runs this pipeline every few minutes. Stage 1 asks Jira for the oldest ticket
+    that has the deploy label and whose built-in Start date has arrived (and Due date not passed),
+    claims it, and comments "STARTED". Stage 2 deploys the services listed on the ticket to dev
+    (multi-service parallel GitOps deploy, same as deploy-svc). Stage 3 always runs and comments
+    "COMPLETED" or "FAILED" on the ticket.
 
-    Input "patches" format: <serviceId>:<tag>,<serviceId>:<tag>   (no spaces)
-    e.g. orders:1.8.3-p1,payments:2.4.1-p1,billing:3.0.9-p2
+    Ticket contract (Jira):
+      - label:  harness-deploy
+      - Start date / Due date: built-in fields
+      - Description contains one line:  patches: orders:1.8.3-p1,payments:2.4.1-p1   (no spaces)
+    Services not mentioned in the ticket are skipped.
   allowStageExecutions: true
   variables:
-    - name: patches
-      type: String
-      description: Comma-separated serviceId:tag pairs, no spaces
-      required: true
-      value: <+input>
     - name: imageRepo
       type: String
       description: Registry namespace. Image = <imageRepo>/<service.variables.imageName>:<tag>
@@ -37,11 +33,158 @@ pipeline:
       type: String
       required: true
       value: <+input>
+    - name: jira_project_key
+      type: String
+      required: false
+      value: SCRUM
+    - name: jira_deploy_label
+      type: String
+      description: Tickets with this label are eligible for scheduled deploy
+      required: false
+      value: harness-deploy
+    - name: jira_claimed_label
+      type: String
+      description: Added when a ticket is picked up so it is never deployed twice
+      required: false
+      value: harness-started
   stages:
+    - stage:
+        name: Find Due Ticket
+        identifier: Find_Due_Ticket
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: Queue
+                  name: Deploy_Queue
+                  identifier: Deploy_Queue
+                  spec:
+                    key: jira-scheduled-deploy
+                    scope: Pipeline
+              - step:
+                  type: ShellScript
+                  name: Poll Jira
+                  identifier: Poll_Jira
+                  timeout: 10m
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          set -e
+
+                          # Jira API v2 is used for the issue read (plain-text description);
+                          # same gateway, no jq/python needed on the delegate.
+                          API3="$JIRA_API_BASE"
+                          API2="${JIRA_API_BASE%/3}/2"
+
+                          jira_comment() {
+                            # $1 = issue key, $2 = text (must not contain double quotes)
+                            BODY="$(printf '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"%s"}]}]}}' "$2")"
+                            curl -sS -o /tmp/jira-comment.json -w "%{http_code}" \
+                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X POST \
+                              -H "Accept: application/json" -H "Content-Type: application/json" \
+                              "${API3}/issue/$1/comment" --data "$BODY" >/dev/null
+                          }
+
+                          jira_add_label() {
+                            curl -sS -o /dev/null -w "%{http_code}" \
+                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X PUT \
+                              -H "Content-Type: application/json" \
+                              "${API3}/issue/$1" \
+                              --data "$(printf '{"update":{"labels":[{"add":"%s"}]}}' "$2")" >/dev/null
+                          }
+
+                          TICKET_KEY="NONE"
+                          PATCHES="NONE"
+
+                          # Built-in Start date / Due date. JQL uses single quotes to avoid JSON escaping.
+                          JQL="project = ${PROJECT} AND labels = '${DEPLOY_LABEL}' AND labels != '${CLAIMED_LABEL}' AND 'Start date' <= now() AND (duedate is EMPTY OR duedate >= startOfDay()) AND statusCategory != Done ORDER BY 'Start date' ASC"
+                          REQUEST_BODY="{\"jql\":\"${JQL}\",\"maxResults\":1,\"fields\":[\"summary\"]}"
+
+                          HTTP_CODE="$(curl -sS -o /tmp/jira-due.json -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X POST \
+                            -H "Accept: application/json" -H "Content-Type: application/json" \
+                            "${API3}/search/jql" --data "$REQUEST_BODY")"
+                          echo "JIRA SEARCH HTTP=$HTTP_CODE"
+
+                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                            echo "ERROR: Jira search failed"; cat /tmp/jira-due.json; exit 1
+                          fi
+
+                          KEY="$(grep -oE '"key":"[A-Z][A-Z0-9_]*-[0-9]+"' /tmp/jira-due.json | head -1 | sed -E 's/"key":"([^"]+)"/\1/' || true)"
+
+                          if [ -z "$KEY" ]; then
+                            echo "No due tickets. Nothing to deploy."
+                          else
+                            echo "Due ticket: $KEY"
+
+                            HTTP_CODE="$(curl -sS -o /tmp/jira-issue.json -w "%{http_code}" \
+                              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -H "Accept: application/json" \
+                              "${API2}/issue/${KEY}?fields=description")"
+                            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                              echo "ERROR: could not read ${KEY}"; cat /tmp/jira-issue.json; exit 1
+                            fi
+
+                            # Line in description:  patches: orders:1.8.3-p1,payments:2.4.1-p1
+                            RAW="$(tr -d '\n' < /tmp/jira-issue.json | grep -oiE 'patches:[[:space:]]*[A-Za-z0-9_.:,-]+' | head -1 | sed -E 's/^[^:]*:[[:space:]]*//' || true)"
+
+                            if printf '%s' "$RAW" | grep -Eq '^[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+(,[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+)*$'; then
+                              # Claim first so the next cron run skips this ticket
+                              jira_add_label "$KEY" "$CLAIMED_LABEL"
+                              jira_comment "$KEY" "Deployment STARTED at $(date -u '+%Y-%m-%d %H:%M UTC') to dev. Patches: ${RAW}. Harness execution: ${EXECUTION_URL}"
+                              TICKET_KEY="$KEY"
+                              PATCHES="$RAW"
+                            else
+                              echo "Ticket $KEY has no valid 'patches:' line; marking invalid"
+                              jira_add_label "$KEY" "harness-invalid"
+                              jira_comment "$KEY" "Scheduled deploy skipped: the description needs a line like patches: orders:1.8.3-p1,payments:2.4.1-p1 (no spaces). Fix it and remove the harness-invalid label to retry."
+                            fi
+                          fi
+
+                          echo "TICKET_KEY=$TICKET_KEY"
+                          echo "PATCHES=$PATCHES"
+                          export TICKET_KEY
+                          export PATCHES
+                    environmentVariables:
+                      - name: JIRA_API_BASE
+                        type: String
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: JIRA_EMAIL
+                        type: String
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
+                        type: String
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                      - name: PROJECT
+                        type: String
+                        value: <+pipeline.variables.jira_project_key>
+                      - name: DEPLOY_LABEL
+                        type: String
+                        value: <+pipeline.variables.jira_deploy_label>
+                      - name: CLAIMED_LABEL
+                        type: String
+                        value: <+pipeline.variables.jira_claimed_label>
+                      - name: EXECUTION_URL
+                        type: String
+                        value: <+pipeline.executionUrl>
+                    outputVariables:
+                      - name: TICKET_KEY
+                        type: String
+                        value: TICKET_KEY
+                      - name: PATCHES
+                        type: String
+                        value: PATCHES
     - stage:
         name: Deploy Dev
         identifier: deploy_dev
         type: Deployment
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.stages.Find_Due_Ticket.spec.execution.steps.Poll_Jira.output.outputVariables.TICKET_KEY> != "NONE"
         spec:
           deploymentType: Kubernetes
           gitOpsEnabled: true
@@ -76,16 +219,17 @@ pipeline:
                           set -euo pipefail
 
                           SERVICE_ID="<+service.identifier>"
-                          PATCHES="<+pipeline.variables.patches>"
+                          PATCHES="<+pipeline.stages.Find_Due_Ticket.spec.execution.steps.Poll_Jira.output.outputVariables.PATCHES>"
 
                           PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
 
                           if [ -z "$PATCH_TAG" ]; then
-                            echo "No patch tag found for service: $SERVICE_ID"
-                            exit 1
+                            echo "Service $SERVICE_ID is not part of this ticket; skipping."
+                            PATCH_TAG="NONE"
+                          else
+                            echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
                           fi
 
-                          echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
                           echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
                     environmentVariables: []
                     outputVariables:
@@ -97,6 +241,9 @@ pipeline:
                   name: Update Release Repo
                   identifier: update_release_repo
                   timeout: 10m
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG> != "NONE"
                   spec:
                     variables:
                       - name: spec.template.spec.containers[0].image
@@ -107,6 +254,9 @@ pipeline:
                   name: Merge PR
                   identifier: merge_pr
                   timeout: 10m
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG> != "NONE"
                   spec:
                     deleteSourceBranch: true
                     mergeStrategy: squash
@@ -116,6 +266,9 @@ pipeline:
                   name: Sync App
                   identifier: sync_app
                   timeout: 15m
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG> != "NONE"
                   spec:
                     prune: true
                     dryRun: false
@@ -137,6 +290,9 @@ pipeline:
                   name: Revert PR
                   identifier: revert_pr
                   timeout: 10m
+                  when:
+                    stageStatus: All
+                    condition: <+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG> != "NONE"
                   spec:
                     commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
         failureStrategies:
@@ -146,217 +302,68 @@ pipeline:
               action:
                 type: StageRollback
     - stage:
-        name: Deploy Test
-        identifier: deploy_test
-        type: Deployment
+        name: Jira Comment End
+        identifier: Jira_Comment_End
+        type: Custom
+        when:
+          pipelineStatus: All
+          condition: <+pipeline.stages.Find_Due_Ticket.spec.execution.steps.Poll_Jira.output.outputVariables.TICKET_KEY> != "NONE"
         spec:
-          deploymentType: Kubernetes
-          gitOpsEnabled: true
-          services:
-            values:
-              - serviceRef: orders
-              - serviceRef: payments
-              - serviceRef: billing
-            metadata:
-              parallel: true
-          multiDeploymentConfig:
-            maxConcurrency: 1
-          environment:
-            environmentRef: test
-            deployToAll: false
-            gitOpsClusters:
-              - identifier: <+pipeline.variables.gitopsCluster>
           execution:
             steps:
               - step:
                   type: ShellScript
-                  name: Resolve Patch Tag
-                  identifier: resolve_patch_tag
+                  name: Comment Result
+                  identifier: Comment_Result
                   timeout: 5m
                   spec:
                     shell: Bash
-                    executionTarget: {}
+                    onDelegate: true
                     source:
                       type: Inline
                       spec:
-                        script: |
-                          set -euo pipefail
+                        script: |-
+                          set -e
 
-                          SERVICE_ID="<+service.identifier>"
-                          PATCHES="<+pipeline.variables.patches>"
+                          case "$DEPLOY_STATUS" in
+                            SUCCEEDED|Success|SUCCESS)
+                              TEXT="Deployment COMPLETED SUCCESSFULLY at $(date -u '+%Y-%m-%d %H:%M UTC') in dev. Patches: ${PATCHES}. Harness execution: ${EXECUTION_URL}"
+                              ;;
+                            *)
+                              TEXT="Deployment ENDED WITH STATUS ${DEPLOY_STATUS} at $(date -u '+%Y-%m-%d %H:%M UTC') in dev (failed services were rolled back). Patches: ${PATCHES}. Harness execution: ${EXECUTION_URL}"
+                              ;;
+                          esac
 
-                          PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
+                          BODY="$(printf '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"%s"}]}]}}' "$TEXT")"
 
-                          if [ -z "$PATCH_TAG" ]; then
-                            echo "No patch tag found for service: $SERVICE_ID"
-                            exit 1
+                          HTTP_CODE="$(curl -sS -o /tmp/jira-comment.json -w "%{http_code}" \
+                            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -X POST \
+                            -H "Accept: application/json" -H "Content-Type: application/json" \
+                            "${JIRA_API_BASE}/issue/${TICKET_KEY}/comment" --data "$BODY")"
+
+                          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+                            echo "ERROR: Jira comment failed. HTTP=${HTTP_CODE}"; cat /tmp/jira-comment.json; exit 1
                           fi
-
-                          echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
-                          echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
-                    environmentVariables: []
-                    outputVariables:
-                      - name: PATCH_TAG
+                          echo "Commented on ${TICKET_KEY}: ${TEXT}"
+                    environmentVariables:
+                      - name: JIRA_API_BASE
                         type: String
-                        value: PATCH_TAG
-              - step:
-                  type: GitOpsUpdateReleaseRepo
-                  name: Update Release Repo
-                  identifier: update_release_repo
-                  timeout: 10m
-                  spec:
-                    variables:
-                      - name: spec.template.spec.containers[0].image
+                        value: https://api.atlassian.com/ex/jira/e7275a1a-f6bd-4b41-af99-c35820ea031b/rest/api/3
+                      - name: JIRA_EMAIL
                         type: String
-                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG>
-              - step:
-                  type: MergePR
-                  name: Merge PR
-                  identifier: merge_pr
-                  timeout: 10m
-                  spec:
-                    deleteSourceBranch: true
-                    mergeStrategy: squash
-                    variables: []
-              - step:
-                  type: GitOpsSync
-                  name: Sync App
-                  identifier: sync_app
-                  timeout: 15m
-                  spec:
-                    prune: true
-                    dryRun: false
-                    applyOnly: false
-                    forceApply: false
-                    applicationsList:
-                      - applicationName: <+service.variables.gitopsAppPrefix>-<+env.identifier>
-                        agentId: <+pipeline.variables.gitopsAgentId>
-                    syncOptions:
-                      skipSchemaValidation: false
-                      autoCreateNamespace: true
-                      pruneResourcesAtLast: false
-                      applyOutOfSyncOnly: false
-                      replaceResources: false
-                      prunePropagationPolicy: foreground
-            rollbackSteps:
-              - step:
-                  type: RevertPR
-                  name: Revert PR
-                  identifier: revert_pr
-                  timeout: 10m
-                  spec:
-                    commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
-        failureStrategies:
-          - onFailure:
-              errors:
-                - AllErrors
-              action:
-                type: StageRollback
-        tags: {}
-    - stage:
-        name: Deploy Prod
-        identifier: deploy_prod
-        type: Deployment
-        spec:
-          deploymentType: Kubernetes
-          gitOpsEnabled: true
-          services:
-            values:
-              - serviceRef: orders
-              - serviceRef: payments
-              - serviceRef: billing
-            metadata:
-              parallel: true
-          multiDeploymentConfig:
-            maxConcurrency: 1
-          environment:
-            environmentRef: prod
-            deployToAll: false
-            gitOpsClusters:
-              - identifier: <+pipeline.variables.gitopsCluster>
-          execution:
-            steps:
-              - step:
-                  type: ShellScript
-                  name: Resolve Patch Tag
-                  identifier: resolve_patch_tag
-                  timeout: 5m
-                  spec:
-                    shell: Bash
-                    executionTarget: {}
-                    source:
-                      type: Inline
-                      spec:
-                        script: |
-                          set -euo pipefail
-
-                          SERVICE_ID="<+service.identifier>"
-                          PATCHES="<+pipeline.variables.patches>"
-
-                          PATCH_TAG="$(printf '%s\n' "$PATCHES" | tr ',' '\n' | awk -F: -v svc="$SERVICE_ID" '$1 == svc {print $2; exit}')"
-
-                          if [ -z "$PATCH_TAG" ]; then
-                            echo "No patch tag found for service: $SERVICE_ID"
-                            exit 1
-                          fi
-
-                          echo "Resolved patch tag for $SERVICE_ID: $PATCH_TAG"
-                          echo "PATCH_TAG=$PATCH_TAG" >> "$HARNESS_OUTPUT_PATH"
-                    environmentVariables: []
-                    outputVariables:
-                      - name: PATCH_TAG
+                        value: <+secrets.getValue("cegeka_jira_email")>
+                      - name: JIRA_API_TOKEN
                         type: String
-                        value: PATCH_TAG
-              - step:
-                  type: GitOpsUpdateReleaseRepo
-                  name: Update Release Repo
-                  identifier: update_release_repo
-                  timeout: 10m
-                  spec:
-                    variables:
-                      - name: spec.template.spec.containers[0].image
+                        value: <+secrets.getValue("cegeka-poc-jira")>
+                      - name: TICKET_KEY
                         type: String
-                        value: <+pipeline.variables.imageRepo>/<+service.variables.imageName>:<+execution.steps.resolve_patch_tag.output.outputVariables.PATCH_TAG>
-              - step:
-                  type: MergePR
-                  name: Merge PR
-                  identifier: merge_pr
-                  timeout: 10m
-                  spec:
-                    deleteSourceBranch: true
-                    mergeStrategy: squash
-                    variables: []
-              - step:
-                  type: GitOpsSync
-                  name: Sync App
-                  identifier: sync_app
-                  timeout: 15m
-                  spec:
-                    prune: true
-                    dryRun: false
-                    applyOnly: false
-                    forceApply: false
-                    applicationsList:
-                      - applicationName: <+service.variables.gitopsAppPrefix>-<+env.identifier>
-                        agentId: <+pipeline.variables.gitopsAgentId>
-                    syncOptions:
-                      skipSchemaValidation: false
-                      autoCreateNamespace: true
-                      pruneResourcesAtLast: false
-                      applyOutOfSyncOnly: false
-                      replaceResources: false
-                      prunePropagationPolicy: foreground
-            rollbackSteps:
-              - step:
-                  type: RevertPR
-                  name: Revert PR
-                  identifier: revert_pr
-                  timeout: 10m
-                  spec:
-                    commitId: <+execution.steps.update_release_repo.updateReleaseRepoOutcome.commitId>
-        failureStrategies:
-          - onFailure:
-              errors:
-                - AllErrors
-              action:
-                type: StageRollback
+                        value: <+pipeline.stages.Find_Due_Ticket.spec.execution.steps.Poll_Jira.output.outputVariables.TICKET_KEY>
+                      - name: PATCHES
+                        type: String
+                        value: <+pipeline.stages.Find_Due_Ticket.spec.execution.steps.Poll_Jira.output.outputVariables.PATCHES>
+                      - name: DEPLOY_STATUS
+                        type: String
+                        value: <+pipeline.stages.deploy_dev.status>
+                      - name: EXECUTION_URL
+                        type: String
+                        value: <+pipeline.executionUrl>
